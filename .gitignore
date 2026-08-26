@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local research artifacts (checksums live in config/artifacts.json)
+DATA/
+MODELS/
+RUNS/
+*.pt
+*.pth
+*.zip
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

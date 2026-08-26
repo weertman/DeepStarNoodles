@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: DeepStarNoodles
+message: If you use this software, please cite it as below.
+type: software
+authors:
+  - family-names: Weertman
+    email: wlweert@gmail.com
+    website: https://github.com/weertman
+license: MIT
+repository-code: https://github.com/weertman/DeepStarNoodles
+abstract: >-
+  Dense pose estimation, Noodle Tracer arm polylines, and temporal
+  tracking for sunflower stars (Pycnopodia helianthoides).
+keywords:
+  - pose estimation
+  - marine biology
+  - Pycnopodia helianthoides
+  - arm tracing

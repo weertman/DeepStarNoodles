@@ -1,0 +1,14 @@
+# Verified Python 3.11 CUDA environment (torch 2.6 / torchvision 0.21).
+# Install the PyTorch build appropriate for the host CUDA version first.
+torch==2.6.0
+torchvision==0.21.0
+numpy==2.4.3
+scipy==1.17.1
+pillow==12.0.0
+opencv-python==4.13.0.92
+pandas==3.0.1
+ultralytics==8.4.51
+pyyaml==6.0.2
+
+# Development and verification
+pytest==9.0.2

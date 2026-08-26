@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "locked_at": "2026-08-08",
+  "causal_tracker": {
+    "name": "legacy_fused",
+    "temporal_tracker_config": null,
+    "promotion_status": "retain_existing_baseline"
+  },
+  "offline_tracker": {
+    "name": null,
+    "promotion_status": "experimental_only"
+  },
+  "decision": {
+    "development_gate_passed": false,
+    "manual_holdout_consumed": false,
+    "reason": "No temporal lifecycle candidate preserved pseudo-truth recall and identity while reducing synthetic false-arm flicker. The manual holdout remains locked rather than being spent on a candidate that failed the development gate."
+  },
+  "evidence": {
+    "study_config_sha256": "107139594a5dd3f09825b99ba504474f7141edb3cccd26e1d045cfff5a3760b8",
+    "validation_manifest_sha256": "77af8acdc1c8c2909367ce4f9efa0a0a7ed957dbdd1423b95775ac9c545d64eb",
+    "hard_screen_metric_summary_sha256": "61442beaca44e34f53f1165ca2c11a5db68cba590197675aa9ab493a2b3eb95c",
+    "offline_proposal_models_sha256": "cb30bb719ed7858aadd3b2297c5c7972afae99d7642464e14a40d4b51ccc9f01",
+    "manual_gold_manifest_sha256": "50c87cc77340ae66a0e602253e1685e0825ac7974bab309749c9cb0e751e4ce7"
+  },
+  "claim_boundary": "All quantitative selection evidence is synthetic or pseudo-ground-truth. No biological arm-identity accuracy claim is made until the prepared manual development labels are completed and a candidate passes the development gate."
+}

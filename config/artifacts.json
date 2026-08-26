@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "generated": "2026-08-25",
+  "recipe": "sleepy-18ch-endpoint-mse + noodle-tracer-calibrated",
+  "artifacts": [
+    {
+      "id": "dinov3-convnext-base",
+      "role": "pretrained-backbone",
+      "path": "MODELS/dinov3/dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth",
+      "sha256": "801f2ba95801bdcc9a8b77e293d38b35b355dbc813ef609cd82e18c3a185e8da",
+      "source_revision": "50001c6db58dbca7e7d06a5c5a9f1e078ca29197"
+    },
+    {
+      "id": "starseg-yolov8",
+      "role": "runtime-detector",
+      "path": "MODELS/starseg/starseg_best.pt",
+      "sha256": "0252e49d3b201f5fe557536d37648ff6ff8ac1ca2c303ec7b5c707f1973a9414",
+      "note": "Locked inference detector. Class name Pycnopodia_helianthoides."
+    },
+    {
+      "id": "starseg-yolo26l-init",
+      "role": "detector-retrain-init",
+      "path": "MODELS/starseg/yolo26l-seg.pt",
+      "sha256": "636024306410afa1732692322fba57d22ea2b1c2f07613fcee131a93d7dd380c",
+      "note": "YOLO26-L-seg init for SCRIPTS/train_starseg.sh. Not the locked runtime weight."
+    },
+    {
+      "id": "hydra-18ch-parent",
+      "role": "dense-parent",
+      "path": "MODELS/hydra/epoch_060.pt",
+      "sha256": "b3423e9bab886777e04825945434b8d42609b3c3fde0cd270d2fe2668c411eec",
+      "note": "Frozen 18-channel legacy10+8D parent used before endpoint-only fine-tune."
+    },
+    {
+      "id": "hydra-endpoint-mse",
+      "role": "released-dense",
+      "path": "MODELS/hydra/endpoint_mse_best.pt",
+      "sha256": "dcf7140c9ef0129d8f66b33b05af6d0ebb064f84b41ce61e51e67061799e3f02",
+      "note": "Endpoint-head MSE fine-tune of epoch_060. Paired with noodle-tracer-locked."
+    },
+    {
+      "id": "noodle-tracer-locked",
+      "role": "released-tracer",
+      "path": "MODELS/tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt",
+      "sha256": "bb7f1b5da4f998006163b0bfbba005b417dfd6e8ab313d8e3869b7224fcc5c6c",
+      "invalid_seed_threshold": 0.4
+    },
+    {
+      "id": "tracer-validation-lock",
+      "role": "recipe-lock",
+      "path": "config/locked/validation_lock.json",
+      "sha256": "49bafb51239bed063af2ac5bd96724497ebe9f4180e0ea83dee4bd90757298b9"
+    },
+    {
+      "id": "tracer-heldout-test",
+      "role": "heldout-eval",
+      "path": "config/locked/heldout_test.json",
+      "sha256": "6fad3cd0c2dafeb46a8a0555a42d6009181af36513af5e5f1eecae0c8118b17f",
+      "arm_f1": 0.837,
+      "group_macro_f1": 0.824
+    },
+    {
+      "id": "dense-training-index",
+      "role": "training-input",
+      "path": "DATA/deepstarnoodles/deepstarnoodles_dense_train_index.csv",
+      "sha256": "5383805930b4621981708b4f9380b3cbd4353d4b92ae5296cf2f6f2f2ec496a9",
+      "records": 5042
+    },
+    {
+      "id": "deepstarnoodles-train-split",
+      "role": "training-split",
+      "path": "DATA/deepstarnoodles/splits/train_index.csv",
+      "sha256": "067ea65d6370eec7c5d0a0b8ac0d3165781f2aa1e8976cd0d37171965f4d3552",
+      "records": 4062,
+      "split_seed": 20260718
+    },
+    {
+      "id": "deepstarnoodles-validation-split",
+      "role": "validation-split",
+      "path": "DATA/deepstarnoodles/splits/validation_index.csv",
+      "sha256": "c36974939d53dda791079f14e35b18e57686ce1420133708f7b9cff2f04a56fe",
+      "records": 478,
+      "split_seed": 20260718
+    },
+    {
+      "id": "deepstarnoodles-test-split",
+      "role": "test-split",
+      "path": "DATA/deepstarnoodles/splits/test_index.csv",
+      "sha256": "80eed3a47507a6dcd502eda2cbf22cd248ac620695f240f38a1f04cca9229b32",
+      "records": 502,
+      "split_seed": 20260718
+    },
+    {
+      "id": "deepstarnoodles-dense-metadata",
+      "role": "dataset-metadata",
+      "path": "DATA/deepstarnoodles/deepstarnoodles_dense_metadata.csv",
+      "sha256": "a6e06cab4d88a3bf50f3a28540cbbc48408d45394d3bfc5a3ea280bae8315668",
+      "records": 5042,
+      "split_seed": 20260718
+    },
+    {
+      "id": "deepstarnoodles-all-image-metadata",
+      "role": "dataset-metadata",
+      "path": "DATA/deepstarnoodles/deepstarnoodles_all_image_metadata.csv",
+      "sha256": "915314c9d4e521ee2df2d717367883ce0b3b279525a14449be3c982ee7aa7ba1",
+      "records": 5792
+    },
+    {
+      "id": "deepstarnoodles-metadata-summary",
+      "role": "dataset-audit",
+      "path": "DATA/deepstarnoodles/metadata_summary.json",
+      "sha256": "41973fdebf8b09ccb1d904c81496e16d3d844920051441aeae3ccb3ed78a9429"
+    },
+    {
+      "id": "starseg-data-yaml",
+      "role": "detector-train-config",
+      "path": "DATA/starseg/data.yaml",
+      "sha256": "ead4bfbb6fd9802606a09c5df1e54d1eccfab38a7d6775ed17669bfd995ed4cf"
+    },
+    {
+      "id": "temporal-lock",
+      "role": "temporal-tracker-lock",
+      "path": "config/temporal_tracking/locked.json",
+      "sha256": "f65c38a3993839471a8f003e93999c51fe77331f70980db33a696f552698e068",
+      "note": "Production linker is legacy fused association. Lifecycle modes are not promoted."
+    }
+  ]
+}

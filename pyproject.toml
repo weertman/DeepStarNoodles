@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepstarnoodles"
+version = "0.1.0"
+description = "Dense pose, Noodle Tracer arm polylines, and temporal tracking for sunflower stars."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Weertman", email = "wlweert@gmail.com" },
+]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "scipy",
+    "pillow",
+    "opencv-python",
+    "pandas",
+    "ultralytics",
+]
+
+[project.urls]
+Homepage = "https://github.com/weertman/DeepStarNoodles"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.package-dir]
+"" = "CORE"
+
+[tool.setuptools.packages.find]
+where = ["CORE"]
+
+[tool.pytest.ini_options]
+pythonpath = ["CORE", "SCRIPTS"]
+testpaths = ["tests"]

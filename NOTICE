@@ -1,0 +1,30 @@
+DeepStarNoodles
+Copyright (c) 2026 Weertman
+
+First-party code in CORE/, SCRIPTS/, and tests/ is licensed under the MIT
+License. See LICENSE.
+
+This repository also redistributes third-party materials under their own
+terms. The MIT grant does not apply to those materials.
+
+DINOv3
+------
+external/dinov3/ is Meta's DINOv3 source, redistributed under the DINOv3
+License (external/dinov3/LICENSE.md). Redistribution of DINO Materials, or
+derivative works, must remain under that agreement and must include a copy
+of it. Publications that use DINO Materials must acknowledge that use.
+
+Siméoni et al., "DINOv3", 2025. https://arxiv.org/abs/2508.10104
+
+StarSeg / Ultralytics
+---------------------
+The StarSeg detector path (ultralytics, YOLO weights, SCRIPTS/train_starseg.sh,
+and crop-time inference) depends on Ultralytics software licensed under
+AGPL-3.0. Combining that path with this repository for distribution may
+impose AGPL obligations on the combined work. First-party MIT code does not
+relicense Ultralytics.
+
+Noodle Tracer RGB encoder
+-------------------------
+The Noodle Tracer RGB encoder uses torchvision's MobileNetV3-Small with
+ImageNet-pretrained weights (MobileNet_V3_Small_Weights.DEFAULT).
