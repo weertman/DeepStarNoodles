@@ -71,7 +71,21 @@ python3.11 -m venv .venv
 export PYTHONPATH=CORE
 ```
 
-Large files are local, not in git. Confirm checksums:
+Large files are not in git. They live on gated Hugging Face repos
+(CC-BY-4.0 for imagery). Log in with `hf auth login` and accept the access
+form, then:
+
+```bash
+hf download weertman/deepstarnoodles --local-dir MODELS
+hf download weertman/deepstarnoodles-data --repo-type dataset --local-dir DATA/deepstarnoodles
+hf download weertman/starseg --repo-type dataset --local-dir DATA/starseg
+```
+
+DINOv3 ConvNeXt-Base is not included. Put Meta's
+`dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth` at
+`MODELS/dinov3/` (SHA-256 `801f2ba95801bdcc9a8b77e293d38b35b355dbc813ef609cd82e18c3a185e8da`).
+
+Confirm checksums:
 
 ```bash
 .venv/bin/python SCRIPTS/validate_artifacts.py
