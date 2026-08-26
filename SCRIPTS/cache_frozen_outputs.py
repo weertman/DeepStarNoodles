@@ -38,6 +38,7 @@ from deepstarnoodles.recurrent_tracer_data import (
     validate_sleepy_split_contract,
     write_cache_record,
 )
+from deepstarnoodles.paths import resolve_repo_path, to_repo_relative
 from deepstarnoodles.train import collate
 
 
@@ -320,20 +321,24 @@ def cache_split(
             for local_index, raw in enumerate(raw_batch):
                 row_index = row_offset + local_index
                 row = dataset.rows[row_index]
-                cache_name = f"{row_index:04d}_{hashlib.sha1(row['image_path'].encode()).hexdigest()[:12]}.npz"
+                stored_image = to_repo_relative(row["image_path"])
+                stored_shapes = to_repo_relative(row["shapes_path"])
+                image_path = resolve_repo_path(stored_image)
+                shapes_path = resolve_repo_path(stored_shapes)
+                cache_name = f"{row_index:04d}_{hashlib.sha1(stored_image.encode()).hexdigest()[:12]}.npz"
                 cache_path = cache_dir / cache_name
                 arms = prepared_arms_from_row(row)
-                image_sha256 = sha256_file(row["image_path"])
-                shapes_sha256 = sha256_file(row["shapes_path"])
+                image_sha256 = sha256_file(image_path)
+                shapes_sha256 = sha256_file(shapes_path)
                 cache_identity = canonical_hash(
                     {
                         "schema": FROZEN_CACHE_SCHEMA,
                         "checkpoint_sha256": checkpoint_sha256,
                         "index_sha256": index_sha256,
                         "row_index": row_index,
-                        "image_path": row["image_path"],
+                        "image_path": stored_image,
                         "image_sha256": image_sha256,
-                        "shapes_path": row["shapes_path"],
+                        "shapes_path": stored_shapes,
                         "shapes_sha256": shapes_sha256,
                     }
                 )
@@ -360,8 +365,8 @@ def cache_split(
                     {
                         "row_index": row_index,
                         "cache_file": cache_path.relative_to(output / "cache").as_posix(),
-                        "image_path": row["image_path"],
-                        "shapes_path": row["shapes_path"],
+                        "image_path": stored_image,
+                        "shapes_path": stored_shapes,
                         "split_group_id": row.get("split_group_id", ""),
                         "arm_count": len(arms),
                         "image_sha256": image_sha256,

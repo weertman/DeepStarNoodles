@@ -11,6 +11,7 @@ from deepstarnoodles.paths import (
     DEFAULT_TEST_INDEX,
     DEFAULT_TRAIN_INDEX,
     DEFAULT_VALIDATION_INDEX,
+    resolve_repo_path,
 )
 from deepstarnoodles.train import split_indices
 
@@ -57,8 +58,11 @@ def test_dense_index_points_at_local_files() -> None:
         pytest.skip("local DeepStarNoodles index is not present")
     with DEFAULT_DENSE_INDEX.open(newline="", encoding="utf-8") as handle:
         row = next(csv.DictReader(handle))
-    assert Path(row["image_path"]).exists()
-    assert Path(row["shapes_path"]).exists()
+    assert row["image_path"].startswith("DATA/deepstarnoodles/")
+    assert row["shapes_path"].startswith("DATA/deepstarnoodles/")
+    assert not Path(row["image_path"]).is_absolute()
+    assert resolve_repo_path(row["image_path"]).exists()
+    assert resolve_repo_path(row["shapes_path"]).exists()
 
 
 def test_metadata_summary_matches_split_counts() -> None:

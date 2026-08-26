@@ -14,6 +14,93 @@ REPO_ROOT = Path(
     )
 ).expanduser().resolve()
 
+_PROJECT_PREFIXES = (
+    "DATA/",
+    "MODELS/",
+    "RUNS/",
+    "config/",
+    "CORE/",
+    "SCRIPTS/",
+    "external/",
+    "tests/",
+    "huggingface/",
+)
+_THREE_CLASS_MARKER = "yolo26_three_class_train_dataset/"
+_TRAIN_DATASET_MARKER = "yolo26_train_dataset/"
+_CVAT_IMAGE_MARKER = "latest_cvat_export/images/default/"
+
+
+def _posix(value: str | Path) -> str:
+    return str(value).strip().replace("\\", "/")
+
+
+def to_repo_relative(value: str | Path, *, root: Path | None = None) -> str:
+    """Return the stored project path (posix, relative to the repo root).
+
+    Accepts already-relative ``DATA/...`` strings, absolute checkouts of this
+    tree, and the historical foreign prefixes used before the public extract.
+    Empty input stays empty so unannotated rows can omit ``shapes_path``.
+    """
+    text = _posix(value)
+    if not text:
+        return ""
+    root = (root or REPO_ROOT).resolve()
+    stripped = text.lstrip("./")
+    if stripped.startswith(_PROJECT_PREFIXES):
+        return stripped
+
+    candidate = Path(text).expanduser()
+    try:
+        return candidate.resolve().relative_to(root).as_posix()
+    except (ValueError, OSError):
+        pass
+
+    root_posix = root.as_posix().rstrip("/")
+    if text == root_posix:
+        return ""
+    if text.startswith(root_posix + "/"):
+        return text[len(root_posix) + 1 :]
+
+    for marker in ("/DATA/deepstarnoodles/", "/DATA/starseg/"):
+        idx = text.find(marker)
+        if idx >= 0:
+            return text[idx + 1 :]
+
+    idx = text.find(_THREE_CLASS_MARKER)
+    if idx >= 0:
+        rest = text[idx + len(_THREE_CLASS_MARKER) :]
+        return f"DATA/starseg/{rest}" if rest else "DATA/starseg"
+    if text.rstrip("/").endswith("yolo26_three_class_train_dataset"):
+        return "DATA/starseg"
+
+    idx = text.find(_TRAIN_DATASET_MARKER)
+    if idx >= 0:
+        rest = text[idx + len(_TRAIN_DATASET_MARKER) :]
+        if rest.startswith(("images/", "labels/")):
+            return f"DATA/starseg/{rest}"
+        return "yolo26_train_dataset"
+
+    if text.rstrip("/").endswith("yolo26_train_dataset"):
+        return "yolo26_train_dataset"
+
+    idx = text.find(_CVAT_IMAGE_MARKER)
+    if idx >= 0:
+        name = text[idx + len(_CVAT_IMAGE_MARKER) :]
+        return f"DATA/deepstarnoodles/images/{name}"
+
+    raise ValueError(f"cannot map path into the repository: {value!r}")
+
+
+def resolve_repo_path(value: str | Path, *, root: Path | None = None) -> Path:
+    """Resolve a stored project path to an absolute filesystem location."""
+    relative = to_repo_relative(value, root=root)
+    if not relative:
+        raise ValueError("empty path")
+    root = (root or REPO_ROOT).resolve()
+    if relative == "yolo26_train_dataset":
+        raise ValueError("upstream StarSeg train set is not shipped in this extract")
+    return (root / relative).resolve()
+
 DATA_ROOT = REPO_ROOT / "DATA"
 RUNS_ROOT = REPO_ROOT / "RUNS"
 MODELS_ROOT = REPO_ROOT / "MODELS"

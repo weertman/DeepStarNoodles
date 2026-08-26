@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
 from deepstarnoodles.dataset import _chaikin_smooth, _resample_polyline, _shape_points
+from deepstarnoodles.paths import resolve_repo_path
 
 CANONICAL_SIZE = 512
 CLOSE_ARM_THRESHOLD_CANONICAL_PX = 4.0
@@ -107,7 +107,7 @@ def annotation_strata_from_index_row(row: Mapping[str, Any]) -> dict[str, Any]:
     shapes_path = row.get("shapes_path")
     if not shapes_path:
         raise ValueError("index row has no shapes_path")
-    shapes = json.loads(Path(str(shapes_path)).read_text(encoding="utf-8"))
+    shapes = json.loads(resolve_repo_path(str(shapes_path)).read_text(encoding="utf-8"))
     if not isinstance(shapes, list):
         raise ValueError("shapes annotation must contain a JSON list")
     return annotation_strata(

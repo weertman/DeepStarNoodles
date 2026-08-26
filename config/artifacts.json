@@ -63,14 +63,14 @@
       "id": "dense-training-index",
       "role": "training-input",
       "path": "DATA/deepstarnoodles/deepstarnoodles_dense_train_index.csv",
-      "sha256": "5383805930b4621981708b4f9380b3cbd4353d4b92ae5296cf2f6f2f2ec496a9",
+      "sha256": "cee38cef7de8e381bbc53ea194d7634ad607fbf50a4af2517c975aef9027989f",
       "records": 5042
     },
     {
       "id": "deepstarnoodles-train-split",
       "role": "training-split",
       "path": "DATA/deepstarnoodles/splits/train_index.csv",
-      "sha256": "067ea65d6370eec7c5d0a0b8ac0d3165781f2aa1e8976cd0d37171965f4d3552",
+      "sha256": "19cd111cfe63d01d82a7f290d40dde6406df9d90f3b941b64c4c2f9fcf847ea4",
       "records": 4062,
       "split_seed": 20260718
     },
@@ -78,7 +78,7 @@
       "id": "deepstarnoodles-validation-split",
       "role": "validation-split",
       "path": "DATA/deepstarnoodles/splits/validation_index.csv",
-      "sha256": "c36974939d53dda791079f14e35b18e57686ce1420133708f7b9cff2f04a56fe",
+      "sha256": "55d7f23ad6c34c1707928d5783960c1dbe13eaea790f622a2540a7c5bd0c6382",
       "records": 478,
       "split_seed": 20260718
     },
@@ -86,7 +86,7 @@
       "id": "deepstarnoodles-test-split",
       "role": "test-split",
       "path": "DATA/deepstarnoodles/splits/test_index.csv",
-      "sha256": "80eed3a47507a6dcd502eda2cbf22cd248ac620695f240f38a1f04cca9229b32",
+      "sha256": "666a56e9e7b011744f4946c0d3bf18ebaba0b3aad4da679288ced5d4a48df686",
       "records": 502,
       "split_seed": 20260718
     },
@@ -94,7 +94,7 @@
       "id": "deepstarnoodles-dense-metadata",
       "role": "dataset-metadata",
       "path": "DATA/deepstarnoodles/deepstarnoodles_dense_metadata.csv",
-      "sha256": "a6e06cab4d88a3bf50f3a28540cbbc48408d45394d3bfc5a3ea280bae8315668",
+      "sha256": "1683548aec1b3e7548a0f16aeaa84733ffb603f5c3f89f9d805b23480cb0e9a0",
       "records": 5042,
       "split_seed": 20260718
     },
@@ -102,20 +102,20 @@
       "id": "deepstarnoodles-all-image-metadata",
       "role": "dataset-metadata",
       "path": "DATA/deepstarnoodles/deepstarnoodles_all_image_metadata.csv",
-      "sha256": "915314c9d4e521ee2df2d717367883ce0b3b279525a14449be3c982ee7aa7ba1",
+      "sha256": "66abd4c64a779a671a42f7c747baf1b7720437e4b0dbef2abea546662a27bf68",
       "records": 5792
     },
     {
       "id": "deepstarnoodles-metadata-summary",
       "role": "dataset-audit",
       "path": "DATA/deepstarnoodles/metadata_summary.json",
-      "sha256": "41973fdebf8b09ccb1d904c81496e16d3d844920051441aeae3ccb3ed78a9429"
+      "sha256": "1d981d9824dce4a895569a74abae4824b17bf1745d0e508e32a11f70f82bbcf7"
     },
     {
       "id": "starseg-data-yaml",
       "role": "detector-train-config",
       "path": "DATA/starseg/data.yaml",
-      "sha256": "ead4bfbb6fd9802606a09c5df1e54d1eccfab38a7d6775ed17669bfd995ed4cf"
+      "sha256": "45a0b96c7ec1eed11d37ead3b169da6c053bd96d485aca97730f7a0c133707f2"
     },
     {
       "id": "temporal-lock",

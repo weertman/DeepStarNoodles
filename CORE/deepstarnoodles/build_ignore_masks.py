@@ -35,7 +35,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from deepstarnoodles.dataset import row_artifact_name
-from deepstarnoodles.paths import DEFAULT_ANNOTATED_INDEX, DEFAULT_STARSEG
+from deepstarnoodles.paths import DEFAULT_ANNOTATED_INDEX, DEFAULT_STARSEG, resolve_repo_path, to_repo_relative
 
 DEFAULT_INDEX = DEFAULT_ANNOTATED_INDEX
 DEFAULT_WEIGHTS = DEFAULT_STARSEG
@@ -107,11 +107,12 @@ def main() -> int:
     manifest: list[dict] = []
     for idx, row in enumerate(rows):
         artifact_name = row_artifact_name(row, idx)
+        image_path = resolve_repo_path(row['image_path'])
         rec: dict = {'idx': idx, 'artifact_name': artifact_name,
-                     'image_path': row['image_path'], 'status': 'no_neighbors',
+                     'image_path': to_repo_relative(image_path), 'status': 'no_neighbors',
                      'n_pycno': 0, 'containment': None, 'n_ignore': 0}
         manifest.append(rec)
-        res = model.predict(row['image_path'], imgsz=args.imgsz, conf=args.conf,
+        res = model.predict(str(image_path), imgsz=args.imgsz, conf=args.conf,
                             device=args.device, verbose=False)[0]
         W, H = int(row['width']), int(row['height'])
         sx, sy = GRID / W, GRID / H
@@ -126,7 +127,7 @@ def main() -> int:
             rec['status'] = 'no_detections'
             continue
 
-        shapes = json.loads(Path(row['shapes_path']).read_text())
+        shapes = json.loads(resolve_repo_path(row['shapes_path']).read_text())
         pts = annotated_points(shapes)
         if len(pts) == 0:
             rec['status'] = 'no_annotation'

@@ -13,6 +13,7 @@ def test_row_artifact_name_is_stable_across_split_positions():
     row = {'shapes_path': '/data/shapes/image_004321.json'}
     assert row_artifact_name(row, 0) == 'image_004321.json'
     assert row_artifact_name(row, 99) == 'image_004321.json'
+    assert row_artifact_name({'shapes_path': 'DATA/deepstarnoodles/shapes/image_004321.json'}, 3) == 'image_004321.json'
     assert row_artifact_name({}, 7) == 'image_000007.json'
 
 

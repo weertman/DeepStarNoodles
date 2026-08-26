@@ -33,6 +33,8 @@ from deepstarnoodles.paths import (
     DEFAULT_STARSEG,
     DEFAULT_TEST_INDEX,
     DEFAULT_TRACER_CHECKPOINT,
+    resolve_repo_path,
+    to_repo_relative,
 )
 from deepstarnoodles.noodle_tracer import (
     load_noodle_tracer_checkpoint,
@@ -209,7 +211,7 @@ def main() -> int:
     rows = load_rows(args.index, args.images + args.warmup)
     if len(rows) < args.images + args.warmup:
         raise RuntimeError("benchmark index does not contain enough rows")
-    images = [read_rgb(Path(row["image_path"])) for row in rows]
+    images = [read_rgb(resolve_repo_path(row["image_path"])) for row in rows]
 
     predictor = HydraPredictor(
         args.hydra,
@@ -349,7 +351,7 @@ def main() -> int:
                 "dense_patch_size": trace_params.dense_patch_size,
             },
             "tracer_metadata": jsonable(tracer_metadata),
-            "image_paths": [str(Path(row["image_path"]).resolve()) for row in rows[args.warmup :]],
+            "image_paths": [to_repo_relative(row["image_path"]) for row in rows[args.warmup :]],
         },
         "stages": {
             name: summarize(values)

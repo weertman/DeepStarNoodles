@@ -9,11 +9,18 @@ import csv
 import json
 import os
 import shutil
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+REPO = Path(__file__).resolve().parents[1]
+if str(REPO / "CORE") not in sys.path:
+    sys.path.insert(0, str(REPO / "CORE"))
+
+from deepstarnoodles.paths import to_repo_relative
 
 
 SUNFLOWER_LABELS = {"Pycnopodia_helianthoides"}
@@ -34,7 +41,6 @@ OUTPUT_NAMES = {
     2: "not_sea_star",
 }
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
-REPO = Path(__file__).resolve().parents[1]
 
 
 def load_names(data_yaml: Path) -> dict[int, str]:
@@ -195,10 +201,10 @@ def main() -> int:
             rows.append(
                 {
                     "split": split,
-                    "source_image": str(source_image),
-                    "source_label": str(label_path),
-                    "output_image": str(args.out / "images" / split / source_image.name),
-                    "output_label": str(args.out / "labels" / split / label_path.name),
+                    "source_image": to_repo_relative(source_image),
+                    "source_label": to_repo_relative(label_path),
+                    "output_image": to_repo_relative(args.out / "images" / split / source_image.name),
+                    "output_label": to_repo_relative(args.out / "labels" / split / label_path.name),
                     "sha256": sha256,
                     "annotation_count": len(rewritten),
                     "class_counts_json": json.dumps(
@@ -223,7 +229,7 @@ def main() -> int:
     (build_root / "data.yaml").write_text(
         yaml.safe_dump(
             {
-                "path": str(args.out),
+                "path": ".",
                 "train": "images/train",
                 "val": "images/val",
                 "names": OUTPUT_NAMES,
@@ -234,9 +240,9 @@ def main() -> int:
     )
     write_csv(build_root / "manifest.csv", rows)
     summary = {
-        "source_dataset": str(args.src),
-        "output_root": str(args.out),
-        "data_yaml": str(args.out / "data.yaml"),
+        "source_dataset": to_repo_relative(args.src),
+        "output_root": to_repo_relative(args.out),
+        "data_yaml": to_repo_relative(args.out / "data.yaml"),
         "class_count": len(OUTPUT_NAMES),
         "class_names": list(OUTPUT_NAMES.values()),
         "source_class_mapping": {
@@ -255,7 +261,7 @@ def main() -> int:
         "duplicate_split_leaks": 0,
         "duplicate_label_rows_removed": duplicate_label_rows_removed,
         "link_mode_requested": args.link_mode,
-        "manifest": str(args.out / "manifest.csv"),
+        "manifest": to_repo_relative(args.out / "manifest.csv"),
     }
     (build_root / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",

@@ -37,6 +37,8 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 from scipy.ndimage import distance_transform_edt
 from torch.utils.data import Dataset
 
+from deepstarnoodles.paths import resolve_repo_path, to_repo_relative
+
 CHANNEL_NAMES = (
     'arm_support',
     'arm_centerline',
@@ -614,8 +616,8 @@ class HydraDenseDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         row = self.rows[idx]
-        image_path = Path(row['image_path'])
-        shapes = json.loads(Path(row['shapes_path']).read_text(encoding='utf-8'))
+        image_path = resolve_repo_path(row['image_path'])
+        shapes = json.loads(resolve_repo_path(row['shapes_path']).read_text(encoding='utf-8'))
         if self.config.ignore_shapes_dir is not None:
             ignore_path = self.config.ignore_shapes_dir / row_artifact_name(row, idx)
             if ignore_path.exists():
@@ -692,7 +694,7 @@ class HydraDenseDataset(Dataset):
             'bridge_valid': bridge_valid,
             'bridge_count': bridge_count,
             'meta': {
-                'image_path': str(image_path),
+                'image_path': to_repo_relative(image_path),
                 'original_size': original_size,
                 'image_size': image.size,
                 'row': row,
@@ -711,7 +713,7 @@ class HydraDenseDataset(Dataset):
         payload = {
             'version': 'hydra_core_img_v1',
             'idx': idx,
-            'path': str(image_path),
+            'path': to_repo_relative(image_path),
             'mtime': int(st.st_mtime),
             'bytes': int(st.st_size),
             'size': list(size),

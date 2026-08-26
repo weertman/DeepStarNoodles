@@ -36,6 +36,9 @@ Layout matches `DATA/deepstarnoodles/` in [the GitHub extract](https://github.co
 
 The CVAT export archive is not included.
 
+Index CSVs store repo-relative paths such as `DATA/deepstarnoodles/images/...`.
+The GitHub loaders resolve them from the checkout root.
+
 ```bash
 hf download weertman/deepstarnoodles-data --repo-type dataset --local-dir DATA/deepstarnoodles
 ```

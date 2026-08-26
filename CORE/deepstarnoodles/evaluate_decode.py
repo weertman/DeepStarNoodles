@@ -41,7 +41,7 @@ from deepstarnoodles.dataset import (
 from deepstarnoodles.decode import DecodeParams, activate_logits, decode_image
 from deepstarnoodles.decode_embed import EmbedDecodeParams, decode_image_embed
 from deepstarnoodles.metrics import centerline_path_metrics
-from deepstarnoodles.paths import DEFAULT_TEST_INDEX
+from deepstarnoodles.paths import DEFAULT_TEST_INDEX, resolve_repo_path
 from deepstarnoodles.train import split_indices
 from deepstarnoodles.metrics import bootstrap_mean_ci
 
@@ -604,7 +604,7 @@ def main() -> int:
     for idx in indices:
         sample = ds[idx]
         strata = annotation_strata_from_index_row(ds.rows[idx])
-        shapes = json.loads(Path(sample['meta']['row']['shapes_path']).read_text())
+        shapes = json.loads(resolve_repo_path(sample['meta']['row']['shapes_path']).read_text())
         sx = args.image_size / float(sample['meta']['row']['width'])
         sy = args.image_size / float(sample['meta']['row']['height'])
         for s in shapes:

@@ -16,6 +16,7 @@ import torch
 from torch.utils.data import Dataset
 
 from deepstarnoodles.dataset import _chaikin_smooth, _resample_polyline, _shape_points
+from deepstarnoodles.paths import resolve_repo_path
 
 
 FROZEN_CACHE_SCHEMA = 2
@@ -55,7 +56,7 @@ def validate_sleepy_split_contract(
 
 
 def prepared_arms_from_row(row: dict[str, str], image_size: int = 512) -> list[np.ndarray]:
-    shapes = json.loads(Path(row["shapes_path"]).read_text(encoding="utf-8"))
+    shapes = json.loads(resolve_repo_path(row["shapes_path"]).read_text(encoding="utf-8"))
     sx = image_size / float(row["width"])
     sy = image_size / float(row["height"])
     arms = []
