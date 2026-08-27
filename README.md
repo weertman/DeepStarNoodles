@@ -85,7 +85,7 @@ DINOv3 ConvNeXt-Base is not included. Put Meta's
 `dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth` at
 `MODELS/dinov3/` (SHA-256 `801f2ba95801bdcc9a8b77e293d38b35b355dbc813ef609cd82e18c3a185e8da`).
 
-Confirm checksums:
+Confirm checksums (skips Ultralytics `yolo26l-seg.pt` unless it is present):
 
 ```bash
 .venv/bin/python SCRIPTS/validate_artifacts.py
@@ -96,7 +96,8 @@ Override the checkout root with `DEEPSTARNOODLES_ROOT` only when needed.
 ## Train
 
 **StarSeg (optional retrain).** Locked inference uses `starseg_best.pt`. The
-3-class YOLO26-L recipe is the from-scratch detector path:
+3-class YOLO26-L recipe is the from-scratch detector path. Put Ultralytics
+`yolo26l-seg.pt` at `MODELS/starseg/` first (not on Hugging Face), then:
 
 ```bash
 SCRIPTS/train_starseg.sh

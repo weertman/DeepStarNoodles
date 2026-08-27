@@ -18,7 +18,7 @@ for path in (CORE, SCRIPTS):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from deepstarnoodles.recurrent_tracer_data import FrozenOutputDataset, OutputAugment
+from deepstarnoodles.noodle_tracer_cache import FrozenOutputDataset, OutputAugment
 from deepstarnoodles.noodle_tracer import (
     load_noodle_tracer_checkpoint,
     save_noodle_tracer_checkpoint,

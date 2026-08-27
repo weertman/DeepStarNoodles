@@ -35,4 +35,4 @@ First-party weights are MIT, matching the GitHub code. StarSeg inference uses Ul
 hf download weertman/deepstarnoodles --local-dir MODELS
 ```
 
-Then place the Meta DINOv3 file at `MODELS/dinov3/dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth` and run `SCRIPTS/validate_artifacts.py`.
+Then place the Meta DINOv3 file at `MODELS/dinov3/dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth` and run `SCRIPTS/validate_artifacts.py`. That check skips Ultralytics `yolo26l-seg.pt` unless you add it for StarSeg from-scratch training.

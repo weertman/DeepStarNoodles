@@ -22,6 +22,7 @@ if [[ ! -f "$DATA_YAML" ]]; then
 fi
 if [[ ! -f "$MODEL" ]]; then
   echo "Missing YOLO26-L-seg init weights: $MODEL" >&2
+  echo "Download yolo26l-seg.pt from Ultralytics into MODELS/starseg/. It is not on Hugging Face." >&2
   exit 1
 fi
 

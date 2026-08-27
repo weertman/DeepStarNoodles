@@ -29,7 +29,7 @@ if str(CORE) not in sys.path:
 
 from deepstarnoodles.dataset import HydraDenseDataset
 from deepstarnoodles.model import HydraModel
-from deepstarnoodles.recurrent_tracer_data import (
+from deepstarnoodles.noodle_tracer_cache import (
     FROZEN_CACHE_SCHEMA,
     cache_record_identity,
     prepared_arms_from_row,

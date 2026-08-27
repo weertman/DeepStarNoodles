@@ -36,6 +36,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not accept an entry's external archive_path fallback.",
     )
+    parser.add_argument(
+        "--include-optional",
+        action="store_true",
+        help="Fail when optional entries such as yolo26l-seg.pt are missing.",
+    )
     return parser.parse_args()
 
 
@@ -62,6 +67,9 @@ def main() -> int:
                 candidates.append(archive_path)
         path = next((candidate for candidate in candidates if candidate.exists()), None)
         if path is None:
+            if item.get("optional") and not args.include_optional:
+                print(f"skip {item['id']}: optional, missing")
+                continue
             failures.append(f"{item['id']}: missing ({', '.join(map(str, candidates))})")
             continue
         checked += 1

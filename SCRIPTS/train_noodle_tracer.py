@@ -26,7 +26,7 @@ if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
 from deepstarnoodles.evaluate_decode import match_arms
-from deepstarnoodles.recurrent_tracer_data import (
+from deepstarnoodles.noodle_tracer_cache import (
     FrozenOutputDataset,
     OutputAugment,
     channel_statistics,

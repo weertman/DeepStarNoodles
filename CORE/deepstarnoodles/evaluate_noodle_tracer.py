@@ -32,7 +32,7 @@ from deepstarnoodles.noodle_tracer import (
     load_noodle_tracer_checkpoint,
     trace_arms_noodle,
 )
-from deepstarnoodles.recurrent_tracer_data import (
+from deepstarnoodles.noodle_tracer_cache import (
     read_cache_record_full,
     sha256_file,
     validate_cache_manifest,

@@ -22,7 +22,8 @@
       "role": "detector-retrain-init",
       "path": "MODELS/starseg/yolo26l-seg.pt",
       "sha256": "636024306410afa1732692322fba57d22ea2b1c2f07613fcee131a93d7dd380c",
-      "note": "YOLO26-L-seg init for SCRIPTS/train_starseg.sh. Not the locked runtime weight."
+      "note": "YOLO26-L-seg init for SCRIPTS/train_starseg.sh. Not the locked runtime weight. Optional: not shipped on Hugging Face.",
+      "optional": true
     },
     {
       "id": "hydra-18ch-parent",
