@@ -18,7 +18,8 @@ dependencies = [
     "pillow",
     "opencv-python",
     "pandas",
-    "ultralytics",
+    "ultralytics==8.4.51",
+    "lap==0.5.13",
 ]
 
 [project.urls]

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated": "2026-08-25",
+  "generated": "2026-08-28",
   "recipe": "sleepy-18ch-endpoint-mse + noodle-tracer-calibrated",
   "artifacts": [
     {
@@ -45,6 +45,16 @@
       "path": "MODELS/tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt",
       "sha256": "bb7f1b5da4f998006163b0bfbba005b417dfd6e8ab313d8e3869b7224fcc5c6c",
       "invalid_seed_threshold": 0.4
+    },
+    {
+      "id": "progress-temporal-vae-sleepy",
+      "role": "released-temporal-vae",
+      "path": "MODELS/temporal_vae/dnt_progress_temporal_vae_60s_sleepy.pt",
+      "sha256": "182de7d66d3b670c94e25d4f78070d7ffa5851acd76200cc7c059849b1abddc9",
+      "source_checkpoint_sha256": "956a0f97b45acaefc4e612866271d6b98a4ef54287566155224fb49c312b7fba",
+      "source_hydra_checkpoint_sha256": "3f691daa14a891a5f9ad163355d969f8922892c662d4d9b7864a54fd815eecee",
+      "optional": true,
+      "note": "Default 60-second, 64-D progress temporal VAE. The current released Hydra is supported for experimentation but this checkpoint has not been scientifically revalidated against its output distribution."
     },
     {
       "id": "tracer-validation-lock",

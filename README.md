@@ -192,6 +192,71 @@ target GPU with:
   --output RUNS/inference_benchmark/gpu_b4_full.json
 ```
 
+### Multiple stars
+
+Single-star focal-animal inference remains the default. Add `--multi-star` to
+track and trace every detected *Pycnopodia* with the pinned BoT-SORT recipe:
+
+```bash
+.venv/bin/python SCRIPTS/infer_video.py \
+  --video path/to/multiple_stars.mp4 \
+  --output RUNS/infer/multiple_stars_tracks.json \
+  --overlay RUNS/infer/multiple_stars_overlay.mp4 \
+  --multi-star \
+  --overlay-support \
+  --batch-size 4
+```
+
+BoT-SORT assigns a video-local `star_track_id`. Each star owns an independent
+legacy fused arm tracker, so each arm `track_id` is scoped to its enclosing
+star. Multi-star output uses schema version 2:
+
+```json
+{
+  "schema_version": 2,
+  "tracking": {"mode": "multi_star_botsort"},
+  "frames": [
+    {
+      "frame": 0,
+      "detected": true,
+      "stars": [
+        {
+          "star_track_id": 1,
+          "crop": {"left": 0, "top": 0, "side": 512},
+          "arms": [{"track_id": 0, "polyline_source": []}]
+        }
+      ]
+    }
+  ]
+}
+```
+
+The full crop record also includes confidence and source-frame bounding-box
+coordinates. Tracker parameters are pinned in
+`config/star_tracking/botsort.yaml`; override them with
+`--star-tracker-config` only for an explicit experiment. In `infer_videos.py`,
+each input stream has isolated BoT-SORT state, while Hydra and Noodle Tracer
+still batch crops across streams. In multi-star mode, `--batch-size` is the
+maximum number of crops in each dense/tracer GPU micro-batch. Multi-star
+polylines use one fixed color rather than encoding arm identity. The optional
+`--overlay-support` layer uses a 0.3 support threshold and 0.28 opacity by
+default; both are configurable.
+
+## Behavior representations
+
+`deepstarnoodles.representations` converts native dense, decoded-arm, and
+tracked-arm outputs into configurable analysis features:
+
+- `arm_bag(...)`: default 24-point, 102-D permutation-invariant arm summary;
+- `arm_motion(...)`: default causal 1/3/5-second tracked distal motion;
+- `ProgressSequenceEncoder`: default 60-second, 64-D progress-temporal VAE;
+- configurable temporal-VAE training and fine-tuning functions.
+
+The published recipes are defaults rather than fixed settings. Results include
+validity masks and deterministic recipe identifiers. See
+[`docs/representations.md`](docs/representations.md) for APIs, calibration,
+training, sidecars, and the temporal checkpoint's compatibility boundary.
+
 ## Tests
 
 ```bash

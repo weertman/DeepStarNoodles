@@ -1,0 +1,18 @@
+# Ultralytics AGPL-3.0 BoT-SORT defaults pinned for reproducible star tracking.
+# Keep this file synchronized with the supported ultralytics version.
+tracker_type: botsort
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+track_buffer: 30
+match_thresh: 0.8
+fuse_score: true
+
+# Global motion compensation is useful for handheld and moving-camera video.
+gmc_method: sparseOptFlow
+
+# Re-identification is intentionally disabled: it adds another model contract.
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: false
+model: auto

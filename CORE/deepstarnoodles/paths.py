@@ -115,6 +115,7 @@ DEFAULT_TEST_INDEX = DEFAULT_SPLITS_ROOT / "test_index.csv"
 DEFAULT_ANNOTATED_INDEX = DEFAULT_DENSE_INDEX
 DEFAULT_IGNORE_SHAPES_DIR = DATA_ROOT / "deepstarnoodles" / "ignore_masks"
 DEFAULT_STARSEG_DATA = DATA_ROOT / "starseg" / "data.yaml"
+DEFAULT_BOTSORT_CONFIG = REPO_ROOT / "config" / "star_tracking" / "botsort.yaml"
 
 DEFAULT_DINOV3_REPO = REPO_ROOT / "external" / "dinov3"
 DEFAULT_DINOV3_CONVNEXT_BASE_CHECKPOINT = (
@@ -127,5 +128,10 @@ DEFAULT_TRACER_CHECKPOINT = (
     MODELS_ROOT
     / "tracer"
     / "noodle_tracer_seed20260807_endpoint_mse_calibrated.pt"
+)
+DEFAULT_TEMPORAL_VAE_CHECKPOINT = (
+    MODELS_ROOT
+    / "temporal_vae"
+    / "dnt_progress_temporal_vae_60s_sleepy.pt"
 )
 DEFAULT_COMBINED_CHECKPOINT = DEFAULT_HYDRA_CHECKPOINT

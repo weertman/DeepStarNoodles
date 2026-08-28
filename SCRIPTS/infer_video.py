@@ -16,10 +16,16 @@ import torch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "CORE"))
 
-from deepstarnoodles.crop import CropConfig, StarCropper
+from deepstarnoodles.crop import (
+    CropConfig,
+    CropResult,
+    StarCropper,
+    TrackedStarCropper,
+)
 from deepstarnoodles.fused_tracker import FusedTracker
 from deepstarnoodles.hydra import HydraInferConfig, HydraPredictor
 from deepstarnoodles.paths import (
+    DEFAULT_BOTSORT_CONFIG,
     DEFAULT_HYDRA_CHECKPOINT,
     DEFAULT_STARSEG,
     DEFAULT_TRACER_CHECKPOINT,
@@ -29,9 +35,14 @@ from deepstarnoodles.noodle_tracer import (
     trace_arms_noodle_batch,
 )
 from deepstarnoodles.runtime import (
+    StarArmTrackerRegistry,
+    crop_record,
+    draw_multi_overlay,
     draw_overlay,
+    multi_star_video_payload,
     source_arm_records,
     track_arms,
+    tracked_star_record,
 )
 
 
@@ -43,13 +54,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--starseg", type=Path, default=DEFAULT_STARSEG)
     parser.add_argument("--hydra", type=Path, default=DEFAULT_HYDRA_CHECKPOINT)
     parser.add_argument("--tracer", type=Path, default=DEFAULT_TRACER_CHECKPOINT)
+    parser.add_argument(
+        "--multi-star",
+        action="store_true",
+        help="Track and trace every sunflower star with BoT-SORT.",
+    )
+    parser.add_argument(
+        "--star-tracker-config",
+        type=Path,
+        default=DEFAULT_BOTSORT_CONFIG,
+        help="Pinned Ultralytics BoT-SORT configuration for --multi-star.",
+    )
+    parser.add_argument(
+        "--overlay-support",
+        action="store_true",
+        help="Blend Hydra support masks into a multi-star overlay.",
+    )
+    parser.add_argument("--support-threshold", type=float, default=0.3)
+    parser.add_argument("--support-alpha", type=float, default=0.28)
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max-frames", type=int)
     parser.add_argument(
         "--batch-size",
         type=int,
         default=1,
-        help="Dense/tracer micro-batch. Keep 1 for minimum live latency.",
+        help="Dense/tracer crop micro-batch. Keep 1 for minimum live latency.",
     )
     parser.add_argument("--shape-gate", type=float, default=120.0)
     parser.add_argument("--embed-weight", type=float, default=2.0)
@@ -61,16 +90,39 @@ def main() -> int:
     args = parse_args()
     if args.batch_size < 1:
         raise ValueError("--batch-size must be positive")
+    if args.overlay_support and not args.multi_star:
+        raise ValueError("--overlay-support requires --multi-star")
+    if not 0.0 <= args.support_threshold <= 1.0:
+        raise ValueError("--support-threshold must be between 0 and 1")
+    if not 0.0 <= args.support_alpha <= 1.0:
+        raise ValueError("--support-alpha must be between 0 and 1")
     device = args.device
-    cropper = StarCropper(
-        args.starseg,
-        CropConfig(device=device if device.startswith("cuda") else "cpu"),
+    crop_config = CropConfig(
+        device=device if device.startswith("cuda") else "cpu"
     )
+    cropper: StarCropper | TrackedStarCropper
+    if args.multi_star:
+        cropper = TrackedStarCropper(
+            args.starseg,
+            crop_config,
+            tracker_config=args.star_tracker_config,
+        )
+    else:
+        cropper = StarCropper(args.starseg, crop_config)
     hydra = HydraPredictor(args.hydra, HydraInferConfig(device=device))
     tracer, tracer_params, _meta, _train = load_noodle_tracer_checkpoint(
         str(args.tracer), device=device
     )
-    tracker = FusedTracker(
+    tracker = (
+        None
+        if args.multi_star
+        else FusedTracker(
+            shape_gate=args.shape_gate,
+            embed_weight=args.embed_weight,
+            max_age=args.max_age,
+        )
+    )
+    star_trackers = StarArmTrackerRegistry(
         shape_gate=args.shape_gate,
         embed_weight=args.embed_weight,
         max_age=args.max_age,
@@ -90,10 +142,15 @@ def main() -> int:
 
     def flush_pending() -> None:
         nonlocal writer
-        detected = [item for item in pending if item["crop"] is not None]
-        decoded_by_frame: dict[int, tuple[np.ndarray, list[dict]]] = {}
-        if detected:
-            crops_rgb = [item["crop"].crop_rgb for item in detected]
+        observations: list[tuple[dict, int, CropResult]] = [
+            (item, crop_index, crop)
+            for item in pending
+            for crop_index, crop in enumerate(item["crops"])
+        ]
+        decoded: dict[tuple[int, int], tuple[np.ndarray, list[dict]]] = {}
+        for start in range(0, len(observations), args.batch_size):
+            batch = observations[start : start + args.batch_size]
+            crops_rgb = [crop.crop_rgb for _item, _index, crop in batch]
             image_batch = hydra.preprocess_batch(crops_rgb).to(hydra.device)
             raw_batch, activated_batch = hydra.predict_tensor_batch(image_batch)
             decoded_batch = trace_arms_noodle_batch(
@@ -102,12 +159,12 @@ def main() -> int:
                 tracer,
                 tracer_params,
             )
-            for item, activated, arms in zip(
-                detected,
+            for (item, crop_index, _crop), activated, arms in zip(
+                batch,
                 activated_batch,
                 decoded_batch,
             ):
-                decoded_by_frame[item["frame"]] = (
+                decoded[(int(item["frame"]), crop_index)] = (
                     activated.cpu().numpy(),
                     arms,
                 )
@@ -115,36 +172,70 @@ def main() -> int:
         for item in pending:
             frame_index = int(item["frame"])
             frame_bgr = item["frame_bgr"]
-            crop = item["crop"]
-            record: dict = {
-                "frame": frame_index,
-                "detected": crop is not None,
-                "crop": None,
-                "arms": [],
-            }
-            if crop is not None:
-                activated, arms = decoded_by_frame[frame_index]
-                labels = track_arms(
-                    tracker,
-                    frame_index,
-                    activated,
-                    arms,
-                )
-                record["crop"] = {
-                    "left": crop.crop_left,
-                    "top": crop.crop_top,
-                    "side": crop.crop_side,
-                    "confidence": crop.confidence,
-                    "bbox_xyxy": list(crop.bbox_xyxy),
+            crops: list[CropResult] = item["crops"]
+            if args.multi_star:
+                star_records: list[dict] = []
+                overlay_stars: list[tuple[CropResult, list[dict]]] = []
+                support_masks: list[np.ndarray] = []
+                for crop_index, crop in enumerate(crops):
+                    if crop.star_track_id is None:
+                        raise RuntimeError("BoT-SORT crop is missing a star track id")
+                    activated, arms = decoded[(frame_index, crop_index)]
+                    labels = star_trackers.track(
+                        crop.star_track_id,
+                        frame_index,
+                        activated,
+                        arms,
+                    )
+                    arm_records = source_arm_records(
+                        arms,
+                        labels,
+                        crop,
+                        model_size=hydra.image_size,
+                    )
+                    star_records.append(tracked_star_record(crop, arm_records))
+                    overlay_stars.append((crop, arm_records))
+                    support_masks.append(activated[0])
+                star_trackers.prune(frame_index)
+                record = {
+                    "frame": frame_index,
+                    "detected": bool(crops),
+                    "stars": star_records,
                 }
-                record["arms"] = source_arm_records(
-                    arms,
-                    labels,
-                    crop,
-                    model_size=hydra.image_size,
+                overlay = draw_multi_overlay(
+                    frame_bgr,
+                    overlay_stars,
+                    support_masks=support_masks if args.overlay_support else None,
+                    support_threshold=args.support_threshold,
+                    support_alpha=args.support_alpha,
                 )
-            if args.overlay is not None:
+            else:
+                crop = crops[0] if crops else None
+                record = {
+                    "frame": frame_index,
+                    "detected": crop is not None,
+                    "crop": None,
+                    "arms": [],
+                }
+                if crop is not None:
+                    if tracker is None:
+                        raise RuntimeError("single-star arm tracker is not initialized")
+                    activated, arms = decoded[(frame_index, 0)]
+                    labels = track_arms(
+                        tracker,
+                        frame_index,
+                        activated,
+                        arms,
+                    )
+                    record["crop"] = crop_record(crop)
+                    record["arms"] = source_arm_records(
+                        arms,
+                        labels,
+                        crop,
+                        model_size=hydra.image_size,
+                    )
                 overlay = draw_overlay(frame_bgr, crop, record["arms"])
+            if args.overlay is not None:
                 if writer is None:
                     height, width = overlay.shape[:2]
                     writer = cv2.VideoWriter(
@@ -157,31 +248,51 @@ def main() -> int:
             frames.append(record)
         pending.clear()
 
-    with torch.inference_mode():
-        while True:
-            if args.max_frames is not None and next_frame >= args.max_frames:
-                break
-            ok, frame_bgr = capture.read()
-            if not ok:
-                break
-            crop = cropper.crop(frame_bgr)
-            pending.append(
-                {
-                    "frame": next_frame,
-                    "frame_bgr": frame_bgr,
-                    "crop": crop,
-                }
-            )
-            next_frame += 1
-            if len(pending) >= args.batch_size:
+    pending_crop_count = 0
+    try:
+        with torch.inference_mode():
+            while True:
+                if args.max_frames is not None and next_frame >= args.max_frames:
+                    break
+                ok, frame_bgr = capture.read()
+                if not ok:
+                    break
+                if args.multi_star:
+                    crops = cropper.track_crops(frame_bgr)
+                else:
+                    crop = cropper.crop(frame_bgr)
+                    crops = [] if crop is None else [crop]
+                pending.append(
+                    {
+                        "frame": next_frame,
+                        "frame_bgr": frame_bgr,
+                        "crops": crops,
+                    }
+                )
+                pending_crop_count += len(crops)
+                next_frame += 1
+                if (
+                    len(pending) >= args.batch_size
+                    or pending_crop_count >= args.batch_size
+                ):
+                    flush_pending()
+                    pending_crop_count = 0
+            if pending:
                 flush_pending()
-        if pending:
-            flush_pending()
-    capture.release()
-    if writer is not None:
-        writer.release()
+    finally:
+        capture.release()
+        cropper.reset()
+        if writer is not None:
+            writer.release()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps({"video": str(args.video), "frames": frames}, indent=2) + "\n")
+    payload: dict = {"video": str(args.video), "frames": frames}
+    if args.multi_star:
+        payload = multi_star_video_payload(
+            args.video,
+            cropper.tracker_config,
+            frames,
+        )
+    args.output.write_text(json.dumps(payload, indent=2) + "\n")
     print(f"wrote {len(frames)} frames -> {args.output}")
     return 0
 

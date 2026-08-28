@@ -8,7 +8,8 @@ tags:
   - pycnopodia
   - sunflower-star
 extra_gated_prompt: >
-  These are trained DeepStarNoodles weights (StarSeg, Hydra, Noodle Tracer).
+  These are trained DeepStarNoodles weights (StarSeg, Hydra, Noodle Tracer,
+  temporal VAE).
   Access is gated so we know who has the locked recipe. DINOv3 backbone
   weights are not included; download those from Meta under the DINOv3 License.
 extra_gated_fields:
@@ -26,8 +27,19 @@ Locked inference and retrain weights for [DeepStarNoodles](https://github.com/we
 | `hydra/epoch_060.pt` | 18-channel Hydra parent | `b3423e9bab886777e04825945434b8d42609b3c3fde0cd270d2fe2668c411eec` |
 | `hydra/endpoint_mse_best.pt` | Released dense Hydra | `dcf7140c9ef0129d8f66b33b05af6d0ebb064f84b41ce61e51e67061799e3f02` |
 | `tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt` | Noodle Tracer | `bb7f1b5da4f998006163b0bfbba005b417dfd6e8ab313d8e3869b7224fcc5c6c` |
+| `temporal_vae/dnt_progress_temporal_vae_60s_sleepy.pt` | Optional 60-second progress temporal VAE | `182de7d66d3b670c94e25d4f78070d7ffa5851acd76200cc7c059849b1abddc9` |
 
 First-party weights are MIT, matching the GitHub code. StarSeg inference uses Ultralytics (AGPL-3.0). The DINOv3 ConvNeXt-Base backbone is **not** in this repo; get `dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth` from Meta (SHA-256 `801f2ba95801bdcc9a8b77e293d38b35b355dbc813ef609cd82e18c3a185e8da`).
+
+The temporal VAE is an inference-only export of the frozen DeepNoodleTracker
+checkpoint at step 10,250. It expects one support-weighted 64×64 progress raster
+per second and produces a 64-D posterior mean from a centered window spanning
+−30 through +29 seconds. It was trained from Hydra checkpoint
+`3f691daa14a891a5f9ad163355d969f8922892c662d4d9b7864a54fd815eecee`.
+The currently released Hydra checkpoint has the same channel contract, but its
+output distribution has not yet been scientifically revalidated with this VAE.
+Use the released VAE as the default reproducible recipe or fine-tune a new model
+through the configurable representation API.
 
 ## Download into a DeepStarNoodles checkout
 
