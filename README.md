@@ -1,176 +1,343 @@
 # DeepStarNoodles
 
-Dense pose estimation, **Noodle Tracer** arm polylines, and temporal tracking
-for sunflower stars (*Pycnopodia helianthoides*).
+DeepStarNoodles is research software for extracting sunflower-star pose and
+arm trajectories from images and video. Given footage of *Pycnopodia
+helianthoides*, it detects each animal, estimates a dense pose field, traces
+visible arms as base-to-tip polylines, and associates those observations
+across video frames. It is intended for researchers studying posture and
+movement from recorded imagery.
 
-```
+**Status:** research release, version 0.1.0. The released evaluation supports
+per-image arm tracing. Video `track_id` values are causal associations for
+visualization and downstream analysis; they are not validated measurements of
+biological arm identity.
+
+## Pipeline
+
+```text
 full frame
-    -> StarSeg YOLO crop (2x bbox square)
-    -> DINOv3 ConvNeXt-Base + FPN + heads  (18-channel dense field)
-    -> Noodle Tracer                       (per-arm polylines)
-    -> fused tracker                       (temporal IDs)
+    -> StarSeg detector and square crop
+    -> Hydra dense pose network
+    -> Noodle Tracer arm polylines
+    -> causal video association
 ```
 
-Held-out 63 Sleepy test images: **arm F1 0.837**, group-macro F1 **0.824**,
-mean/p90 Chamfer 3.389 / 5.761, 99.84% base completion. Embedding-Dijkstra on
-the same Hydra outputs is a geometric baseline (arm F1 **0.777**), not a
-second released recipe. See `config/locked/heldout_test.json`.
+- **StarSeg** detects sunflower stars and creates a square crop around each
+  detection.
+- **Hydra** combines a DINOv3 ConvNeXt-Base backbone with an FPN and prediction
+  heads to produce an 18-channel dense field: ten geometry, landmark, and
+  endpoint channels plus an eight-channel arm embedding.
+- **Noodle Tracer** uses the image crop and dense field to generate one
+  base-to-tip polyline for each detected arm.
+- The **fused tracker** assigns video-local association IDs to arm
+  observations.
 
-Author: Weertman (`wlweert@gmail.com`). First-party code is MIT; see
-`LICENSE` and `NOTICE`. DINOv3 in `external/dinov3/` remains under Meta's
-DINOv3 License and must be cited in publications that use it (Siméoni et al.,
-2025, https://arxiv.org/abs/2508.10104). StarSeg depends on Ultralytics
-(AGPL-3.0).
+## Quick start
 
-## Locked recipe
+Run these commands from the repository root. Python 3.11 is the tested
+environment; a CUDA-capable GPU is recommended.
 
-1. 18-channel Hydra (`legacy10` geometry + 8-D embedding) from
-   `MODELS/hydra/epoch_060.pt`.
-2. Endpoint-head-only MSE fine-tune
-   (`MODELS/hydra/endpoint_mse_best.pt`, SHA-256 `dcf7140c…`).
-3. Noodle Tracer, 33×33, frozen MobileNetV3-Small RGB, 128-unit GRU,
-   `context_mode=single`, 8 px lookahead, 0.5–6 px step,
-   `invalid_seed_threshold=0.4`
-   (`MODELS/tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt`,
-   SHA-256 `bb7f1b5d…`).
-
-Video deploy uses this pair. StarSeg runtime weight is
-`MODELS/starseg/starseg_best.pt` (YOLOv8, class `Pycnopodia_helianthoides`).
-
-## Splits
-
-**Hydra dense pose** uses grouped image splits (seed 20260718): **4062 / 478 /
-502** train / validation / test. Related captures share `split_group_id` and
-do not cross boundaries.
-
-**Noodle Tracer** is trained and locked on the Sleepy subset of those grouped
-splits: **403 / 34 / 63**.
-
-## Layout
-
-| Path | Contents |
-| --- | --- |
-| `CORE/deepstarnoodles/` | Model, dataset, decode, Noodle Tracer, cropper, fused tracker |
-| `SCRIPTS/` | Train / cache / calibrate / evaluate / infer CLIs |
-| `DATA/deepstarnoodles/` | Dense images, shapes, grouped splits (seed 20260718) |
-| `DATA/starseg/` | 3-class YOLO train/val corpus |
-| `MODELS/` | DINOv3, StarSeg, Hydra, tracer checkpoints |
-| `RUNS/` | Training outputs |
-| `external/dinov3/` | Vendored DINOv3 hub source |
-| `config/artifacts.json` | SHA-256 pins |
-| `config/locked/` | Immutable tracer validation lock and held-out eval |
-
-## Environment
-
-Python 3.11. Install a CUDA PyTorch build first, then:
+### 1. Create the environment
 
 ```bash
 python3.11 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -r requirements.txt
-export PYTHONPATH=CORE
+source .venv/bin/activate
+python -m pip install --upgrade pip
 ```
 
-Large files are not in git. They live on gated Hugging Face repos
-(CC-BY-4.0 for imagery). Log in with `hf auth login` and accept the access
-form, then:
+Install PyTorch 2.6 and torchvision 0.21 using the
+[official 2.6 installation instructions](https://pytorch.org/get-started/previous-versions/#v260)
+so the wheel matches the host CUDA version. Then install the remaining
+dependencies and the Hugging Face CLI:
 
 ```bash
+python -m pip install -r requirements.txt
+python -m pip install --upgrade huggingface_hub
+export PYTHONPATH="$PWD/CORE"
+```
+
+### 2. Download data and checkpoints
+
+The runtime checkpoints are hosted in a gated
+[Hugging Face model repository](https://huggingface.co/weertman/deepstarnoodles).
+Request access, then download them into the checkout:
+
+```bash
+hf auth login
 hf download weertman/deepstarnoodles --local-dir MODELS
-hf download weertman/deepstarnoodles-data --repo-type dataset --local-dir DATA/deepstarnoodles
-hf download weertman/starseg --repo-type dataset --local-dir DATA/starseg
 ```
 
-DINOv3 ConvNeXt-Base is not included. Put Meta's
-`dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth` at
-`MODELS/dinov3/` (SHA-256 `801f2ba95801bdcc9a8b77e293d38b35b355dbc813ef609cd82e18c3a185e8da`).
+The DINOv3 ConvNeXt-Base backbone is distributed separately under Meta's
+DINOv3 License. Follow the
+[official DINOv3 access instructions](https://github.com/facebookresearch/dinov3)
+and place this file in `MODELS/dinov3/`:
 
-Confirm checksums (skips Ultralytics `yolo26l-seg.pt` unless it is present):
+```text
+dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth
+SHA-256 801f2ba95801bdcc9a8b77e293d38b35b355dbc813ef609cd82e18c3a185e8da
+```
+
+Validate the runtime artifacts against the
+[artifact manifest](config/artifacts.json):
 
 ```bash
-.venv/bin/python SCRIPTS/validate_artifacts.py
+python SCRIPTS/validate_artifacts.py \
+  --roles pretrained-backbone runtime-detector released-dense released-tracer
 ```
 
-Override the checkout root with `DEEPSTARNOODLES_ROOT` only when needed.
+Hydra and Noodle Tracer training and evaluation require the
+[dense-pose dataset](https://huggingface.co/datasets/weertman/deepstarnoodles-data):
 
-## Train
+```bash
+hf download weertman/deepstarnoodles-data \
+  --repo-type dataset \
+  --local-dir DATA/deepstarnoodles
+```
 
-**StarSeg (optional retrain).** Locked inference uses `starseg_best.pt`. The
-3-class YOLO26-L recipe is the from-scratch detector path. Put Ultralytics
-`yolo26l-seg.pt` at `MODELS/starseg/` first (not on Hugging Face), then:
+StarSeg retraining requires the separate
+[StarSeg dataset](https://huggingface.co/datasets/weertman/starseg):
+
+```bash
+hf download weertman/starseg \
+  --repo-type dataset \
+  --local-dir DATA/starseg
+```
+
+After downloading both datasets, validate the complete checkout:
+
+```bash
+python SCRIPTS/validate_artifacts.py
+```
+
+Full validation skips absent optional artifacts, including the YOLO26-L
+training initializer and temporal VAE. Pass `--include-optional` to require
+them.
+
+### 3. Process a video
+
+```bash
+python SCRIPTS/infer_video.py \
+  --video path/to/video.mp4 \
+  --output RUNS/infer/tracks.json \
+  --overlay RUNS/infer/overlay.mp4
+```
+
+The default mode follows one focal animal and writes frame-aligned arm
+polylines and association IDs to `tracks.json`. The optional overlay provides
+a visual check of the detector, crop, and traced arms. Each frame record
+contains the frame number, detection status, crop metadata, and arm records.
+Each arm includes its `track_id`, crop- and source-coordinate polylines, and
+identity embedding.
+
+## Reported results
+
+The release result is recorded in
+[`config/locked/heldout_test.json`](config/locked/heldout_test.json). It covers
+the complete 63-image test split of the **Sleepy** data-collection subset,
+identified as `source_family=sleepy_stars` in the dataset metadata. Those
+images belong to five leakage-separated `split_group_id` groups.
+
+Arms are greedily matched one-to-one when their symmetric Chamfer distance is
+at most 8 model-crop pixels. All reported distances below are in model-crop
+pixels.
+
+- Noodle Tracer aggregate precision, recall, and F1 are **0.859**, **0.815**,
+  and **0.837**. Mean and p90 Chamfer distances are **3.389** and **5.761**.
+- Equal-group macro precision, recall, and F1 are **0.850**, **0.802**, and
+  **0.824**. Group-macro mean and p90 Chamfer distances are **3.487** and
+  **5.645**.
+- Of 617 emitted traces, 616 terminated at the model's base condition
+  (**99.84%**). This is a decoder termination statistic, not an independent
+  biological accuracy measure.
+- The embedding-aware Dijkstra geometric baseline has aggregate F1 **0.777**
+  and group-macro F1 **0.757** on the same cached Hydra outputs.
+- A paired bootstrap over the five split groups estimates an aggregate F1
+  improvement of **0.062** over that baseline (95% CI **0.043–0.097**; 2,000
+  resamples).
+
+Arm crossings remain difficult. Fifty of the 63 test images are marked as
+containing a crossing; aggregate F1 on that subset is **0.795**, with mean
+Chamfer distance **3.663**.
+
+The JSON report is the canonical record for this release and contains the
+artifact, cache, evaluator, and decoder hashes used to produce it. It is
+archival provenance rather than a claim that the current checkout can
+regenerate the report bit for bit.
+
+## Limitations
+
+- The released arm-tracing evaluation is limited to the Sleepy subset and may
+  not represent other imaging conditions, life stages, or species.
+- Performance is lower when arms cross or overlap. The crossing subset result
+  above should be considered when selecting downstream analyses.
+- Geometric errors are reported in model-crop pixels. No physical-length
+  calibration is provided by the inference pipeline.
+- Video association has not been validated as biological arm identity.
+- StarSeg inference depends on Ultralytics, and its training data and class
+  definitions constrain detector generalization.
+
+## Released recipe and data splits
+
+The inference recipe consists of:
+
+1. `MODELS/starseg/starseg_best.pt`, a YOLOv8 StarSeg detector for class
+   `Pycnopodia_helianthoides`;
+2. `MODELS/hydra/endpoint_mse_best.pt`, an endpoint-head fine-tune of the
+   18-channel parent checkpoint `MODELS/hydra/epoch_060.pt`;
+3. `MODELS/tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt`, a
+   Noodle Tracer with a 33×33 dense patch, frozen MobileNetV3-Small RGB
+   encoder, 128-unit GRU, single-scale context, 8-pixel lookahead, 0.5–6-pixel
+   step range, and invalid-seed threshold 0.4.
+
+Full SHA-256 values and artifact roles are maintained in
+[`config/artifacts.json`](config/artifacts.json).
+
+Hydra uses grouped splits created with seed 20260718: **4,062 training**, **478
+validation**, and **502 test** images. Related captures remain in the same
+group. Noodle Tracer uses the Sleepy rows within those splits: **403
+training**, **34 validation**, and **63 test** images.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `CORE/deepstarnoodles/` | Models, data, decoding, tracking, representations |
+| `SCRIPTS/` | Training, evaluation, validation, and inference commands |
+| `config/` | Artifact hashes, evaluation locks, and tracking settings |
+| `docs/` | Detailed API and representation documentation |
+| `tests/` | Automated tests |
+| `external/dinov3/` | Vendored DINOv3 source under Meta's license |
+| `DATA/` | Downloaded datasets; excluded from git |
+| `MODELS/` | Downloaded and trained checkpoints; excluded from git |
+| `RUNS/` | Generated training, evaluation, and inference outputs |
+
+## Training and evaluation
+
+These workflows create new artifacts under `RUNS/`. They do not recreate the
+released checkpoint hashes unless the complete original training environment
+and state are reproduced.
+
+### StarSeg
+
+The locked runtime detector is `MODELS/starseg/starseg_best.pt`. To train the
+three-class YOLO26-L detector, obtain `yolo26l-seg.pt` from Ultralytics and
+place it in `MODELS/starseg/`. The training classes are `sunflower_star`,
+`other_sea_star`, and `not_sea_star`. With the virtual environment activated:
 
 ```bash
 SCRIPTS/train_starseg.sh
 ```
 
-**Hydra 18-channel, then endpoint fine-tune.** Grouped splits, ignore masks,
-and `--embedding-dim 8` are the defaults:
+The script trains on `DATA/starseg/data.yaml` and uses the first visible CUDA
+device.
+
+### Hydra
+
+Hydra defaults to the grouped training and validation indexes, 512-pixel
+inputs, and an eight-channel arm-identity embedding. Start a new 18-channel
+training run with:
 
 ```bash
-export PYTHONPATH=CORE
-.venv/bin/python -m deepstarnoodles.train \
+python -m deepstarnoodles.train \
   --out-dir RUNS/hydra_18ch \
-  --init-checkpoint MODELS/hydra/epoch_060.pt
+  --embedding-dim 8
+```
 
-.venv/bin/python -m deepstarnoodles.train \
+To run the endpoint-head fine-tune from the released parent checkpoint:
+
+```bash
+python -m deepstarnoodles.train \
   --out-dir RUNS/hydra_endpoint_mse \
   --endpoint-only \
   --epochs 8 \
   --init-checkpoint MODELS/hydra/epoch_060.pt
 ```
 
-**Noodle Tracer.** Freeze Hydra outputs on the Sleepy 403/34/63 split, train
-with `--context-mode single` (the locked recipe; this is also the CLI default),
-then calibrate `invalid_seed_threshold` to 0.4:
+Hydra checkpoints are written to a timestamped subdirectory of the selected
+output directory.
+
+### Noodle Tracer
+
+Prepare the Sleepy training and validation rows and cache the frozen parent
+Hydra outputs:
 
 ```bash
-.venv/bin/python SCRIPTS/cache_frozen_outputs.py
-.venv/bin/python SCRIPTS/train_noodle_tracer.py \
+python SCRIPTS/cache_frozen_outputs.py \
+  --stage all \
+  --checkpoint MODELS/hydra/epoch_060.pt \
+  --cache-splits train,validation \
+  --output RUNS/noodle_tracer_sleepy18
+```
+
+Train the single-context tracer:
+
+```bash
+python SCRIPTS/train_noodle_tracer.py \
+  --study-root RUNS/noodle_tracer_sleepy18 \
   --context-mode single \
   --out-dir RUNS/noodle_tracer_sleepy18/training/primary
-.venv/bin/python SCRIPTS/calibrate_noodle_tracer.py \
+```
+
+Select seed and termination thresholds on validation and write the calibrated
+checkpoint:
+
+```bash
+python SCRIPTS/calibrate_noodle_tracer.py \
+  --study-root RUNS/noodle_tracer_sleepy18 \
+  --checkpoint RUNS/noodle_tracer_sleepy18/training/primary/best.pt \
   --invalid-seed-thresholds none,0.2,0.3,0.4,0.5,0.6 \
   --base-state-thresholds none \
-  --lost-state-thresholds none
+  --lost-state-thresholds none \
+  --write-calibrated-checkpoint \
+    RUNS/noodle_tracer_sleepy18/training/primary/calibrated.pt
 ```
 
-## Evaluate
-
-Noodle Tracer first (locked recipe). Dijkstra eval of the Hydra field is the
-geometric baseline.
+Evaluate the resulting checkpoint on validation:
 
 ```bash
-export PYTHONPATH=CORE
-.venv/bin/python SCRIPTS/evaluate_noodle_tracer.py \
+python SCRIPTS/evaluate_noodle_tracer.py \
   --study-root RUNS/noodle_tracer_sleepy18 \
-  --checkpoint MODELS/tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt \
-  --split test
+  --checkpoint RUNS/noodle_tracer_sleepy18/training/primary/calibrated.pt \
+  --split validation \
+  --out-json RUNS/noodle_tracer_sleepy18/evaluation/validation.json
+```
 
-.venv/bin/python -m deepstarnoodles.evaluate_decode \
+Held-out test access requires a lock generated from an exactly matching
+validation configuration. The archived release result is provided in
+[`config/locked/heldout_test.json`](config/locked/heldout_test.json); its lock
+token is not a reusable token for newly trained models.
+
+### Dense geometric decoding
+
+The following evaluates Hydra's standard and embedding-aware geometric
+decoders on all 502 images in the grouped test index:
+
+```bash
+python -m deepstarnoodles.evaluate_decode \
   --mode model \
-  --checkpoint MODELS/hydra/endpoint_mse_best.pt
+  --checkpoint MODELS/hydra/endpoint_mse_best.pt \
+  --index DATA/deepstarnoodles/splits/test_index.csv \
+  --split all \
+  --out-json RUNS/evaluate_decode/grouped_test.json
 ```
 
-`evaluate_decode` defaults to the grouped test index and `--split all`.
+This 502-image evaluation has a different scope from the archived
+63-image Sleepy comparison reported above.
 
-## Deploy
+## Advanced video inference
 
-```bash
-.venv/bin/python SCRIPTS/infer_video.py \
-  --video path/to/video.mp4 \
-  --output RUNS/infer/tracks.json \
-  --overlay RUNS/infer/overlay.mp4 \
-  --batch-size 1
-```
+Single-video inference uses a dense/tracer batch size of one for minimum live
+latency. The default arm-association parameters are a shape gate of 120,
+embedding weight of 2.0, and maximum age of 16 frames; each is configurable
+through `infer_video.py`.
 
-Crop → 18-channel Hydra → Noodle Tracer → fused tracker (shape_gate 120,
-embed_weight 2.0, max_age 16). Temporal lifecycle modes are not enabled.
-Batch size 1 is the low-latency default. For four independent 1 fps streams,
-use one round-robin process so Hydra and all live RNN walkers share a B=4
-GPU batch:
+### Multiple input streams
+
+`infer_videos.py` processes independent videos round-robin while batching
+their Hydra and Noodle Tracer work:
 
 ```bash
-.venv/bin/python SCRIPTS/infer_videos.py \
+python SCRIPTS/infer_videos.py \
   --video path/to/a.mp4 \
   --video path/to/b.mp4 \
   --video path/to/c.mp4 \
@@ -179,26 +346,16 @@ GPU batch:
   --output-dir RUNS/infer/multi
 ```
 
-This is an inference-only optimization: no checkpoint, architecture, recurrent
-step, threshold, or trace semantics changes. Benchmark the complete path on a
-target GPU with:
-
-```bash
-.venv/bin/python SCRIPTS/benchmark_inference.py \
-  --device cuda:0 \
-  --batch-size 4 \
-  --engine batch \
-  --include-starseg \
-  --output RUNS/inference_benchmark/gpu_b4_full.json
-```
+Each input retains independent cropper and tracker state. Batch size controls
+the maximum number of crops in a GPU micro-batch and does not change model
+weights or tracing thresholds.
 
 ### Multiple stars
 
-Single-star focal-animal inference remains the default. Add `--multi-star` to
-track and trace every detected *Pycnopodia* with the pinned BoT-SORT recipe:
+Use `--multi-star` to detect and trace every sunflower star in a frame:
 
 ```bash
-.venv/bin/python SCRIPTS/infer_video.py \
+python SCRIPTS/infer_video.py \
   --video path/to/multiple_stars.mp4 \
   --output RUNS/infer/multiple_stars_tracks.json \
   --overlay RUNS/infer/multiple_stars_overlay.mp4 \
@@ -207,66 +364,57 @@ track and trace every detected *Pycnopodia* with the pinned BoT-SORT recipe:
   --batch-size 4
 ```
 
-BoT-SORT assigns a video-local `star_track_id`. Each star owns an independent
-legacy fused arm tracker, so each arm `track_id` is scoped to its enclosing
-star. Multi-star output uses schema version 2:
-
-```json
-{
-  "schema_version": 2,
-  "tracking": {"mode": "multi_star_botsort"},
-  "frames": [
-    {
-      "frame": 0,
-      "detected": true,
-      "stars": [
-        {
-          "star_track_id": 1,
-          "crop": {"left": 0, "top": 0, "side": 512},
-          "arms": [{"track_id": 0, "polyline_source": []}]
-        }
-      ]
-    }
-  ]
-}
-```
-
-The full crop record also includes confidence and source-frame bounding-box
-coordinates. Tracker parameters are pinned in
-`config/star_tracking/botsort.yaml`; override them with
-`--star-tracker-config` only for an explicit experiment. In `infer_videos.py`,
-each input stream has isolated BoT-SORT state, while Hydra and Noodle Tracer
-still batch crops across streams. In multi-star mode, `--batch-size` is the
-maximum number of crops in each dense/tracer GPU micro-batch. Multi-star
-polylines use one fixed color rather than encoding arm identity. The optional
-`--overlay-support` layer uses a 0.3 support threshold and 0.28 opacity by
-default; both are configurable.
+BoT-SORT assigns each animal a video-local `star_track_id` using the pinned
+[`config/star_tracking/botsort.yaml`](config/star_tracking/botsort.yaml)
+configuration. Each animal has a separate arm associator, so an arm
+`track_id` is scoped to its enclosing `star_track_id`. Multi-star output uses
+schema version 2 and stores detections under each frame's `stars` collection.
+The optional support overlay defaults to a 0.3 threshold and 0.28 opacity.
 
 ## Behavior representations
 
 `deepstarnoodles.representations` converts native dense, decoded-arm, and
 tracked-arm outputs into configurable analysis features:
 
-- `arm_bag(...)`: default 24-point, 102-D permutation-invariant arm summary;
-- `arm_motion(...)`: default causal 1/3/5-second tracked distal motion;
-- `ProgressSequenceEncoder`: default 60-second, 64-D progress-temporal VAE;
-- configurable temporal-VAE training and fine-tuning functions.
+- `arm_bag(...)` produces a default 102-dimensional,
+  permutation-invariant arm-shape summary.
+- `arm_motion(...)` produces causal tracked-arm motion features at default
+  lags of 1, 3, and 5 seconds.
+- `ProgressSequenceEncoder` produces a default 64-dimensional temporal latent
+  representation from a 60-second progress-field window.
 
-The published recipes are defaults rather than fixed settings. Results include
-validity masks and deterministic recipe identifiers. See
-[`docs/representations.md`](docs/representations.md) for APIs, calibration,
-training, sidecars, and the temporal checkpoint's compatibility boundary.
+Representation results include validity masks and deterministic recipe
+identifiers. See
+[`docs/representations.md`](docs/representations.md) for API examples,
+calibration requirements, training, and sidecar formats.
+
+The optional temporal VAE was trained on a different Hydra checkpoint with
+the same channel contract. Its use with the released Hydra is available for
+experimentation but has not been scientifically revalidated.
 
 ## Tests
 
 ```bash
-export PYTHONPATH="CORE:SCRIPTS"
-.venv/bin/python -m pytest -q tests
+python -m pytest -q
 ```
 
-## Non-goals
+Tests that require downloaded datasets or checkpoints are skipped when those
+artifacts are unavailable.
 
-This extract does not include BAM, spatial VAE, VAME, Sleepy 5M-frame archives,
-StarFlipping behavior analysis, SLEAP, pixel-instance KMeans, the June 9/10
-10-channel ensemble, 768-px Hydra ablations, or experimental offline tracklet
-reconciliation.
+## License, data use, and citation
+
+First-party source code and first-party released weights are available under
+the [MIT License](LICENSE). Third-party components retain their own terms; see
+[`NOTICE`](NOTICE) for the complete dependency and redistribution summary.
+
+- The vendored DINOv3 source and separately downloaded backbone remain under
+  Meta's DINOv3 License. Publications using DINOv3 must acknowledge it:
+  Siméoni et al., “[DINOv3](https://arxiv.org/abs/2508.10104),” 2025.
+- StarSeg training and inference use Ultralytics software under AGPL-3.0.
+  Distribution of a combined work may therefore create AGPL obligations.
+- The gated imagery datasets are licensed CC-BY-4.0. Access is recorded
+  because *Pycnopodia helianthoides* is a listed species.
+
+If you use DeepStarNoodles, cite the software using
+[`CITATION.cff`](CITATION.cff) and cite DINOv3 when using its backbone.
+Contact information is provided in `CITATION.cff`.
