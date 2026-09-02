@@ -1,0 +1,9 @@
+{
+  "status": "unmeasured",
+  "device": "unknown",
+  "recommended_batch_size": 4,
+  "memory_fraction": 0.45,
+  "yolo_p99_limit_ms": 200.0,
+  "results": {},
+  "note": "Default until SCRIPTS/measure_hydra_budget.py runs on CUDA. Do not use B=1 unless that measurement says so."
+}

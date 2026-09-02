@@ -392,6 +392,48 @@ The optional temporal VAE was trained on a different Hydra checkpoint with
 the same channel contract. Its use with the released Hydra is available for
 experimentation but has not been scientifically revalidated.
 
+### Training the temporal VAE on a recorder archive
+
+The archive Hydra append (`SCRIPTS/append_hydra_archive.py`) keeps landmarks
+only, so the temporal VAE needs a second lightweight Hydra pass that keeps just
+channels 0/4 as a body-centered, size-normalized 64×64 progress raster per
+frame. Each stage is a separate, niced, recorder-guarded process; inventory is
+the default and `--run` writes:
+
+```bash
+python SCRIPTS/measure_hydra_budget.py                       # once per GPU
+python SCRIPTS/extract_progress_cache.py                     # inventory
+python SCRIPTS/extract_progress_cache.py --run --memory-fraction 0.25
+python SCRIPTS/finetune_progress_vae.py --name archive_ft --dry-run
+python SCRIPTS/finetune_progress_vae.py --name archive_ft
+python SCRIPTS/encode_progress_latents.py
+python SCRIPTS/progress_vae_pipeline.py                      # unattended chain
+```
+
+Caches land in `DATA/deepstarnoodles/progress_cache/{camera}/{session}/`
+(`*_progress64.npz`, uint8 support and progress with real frame timestamps
+and the per-clip characteristic scale). Recorders rarely deliver exactly 1 fps
+(the Startracked recorder gives ~1.025 s between frames), so training and
+inference both resample each clip onto a true 1 Hz grid (nearest frame within
+0.55 s) instead of indexing raw frames. Splits are by whole recording session
+with all cameras together (`DATA/deepstarnoodles/progress_vae_splits.json`).
+
+Fine-tuning warm-starts the released
+`MODELS/temporal_vae/dnt_progress_temporal_vae_60s_sleepy.pt`, inherits its
+architecture, preprocessing, and window configuration, and uses the published
+masked-reconstruction + KL-rate objective (mask ratio 0.35, free bits 0.02,
+16 nat target). The startup report prints the full effective
+`training_config` so the schedule is auditable. It exports
+`MODELS/temporal_vae/dnt_progress_temporal_vae_60s_{name}.pt`. Encoding writes
+per-frame tokens, latents, marginal entropy, AR(1) entropy rate, predictable
+information, 1/5/30 s latent speed and posterior KL to
+`DATA/deepstarnoodles/progress_latents/`, with one median row per clip in
+`segments.csv`. Standardization statistics come from training-split clips only.
+
+`SOURCE_ROOT` in `CORE/deepstarnoodles/batch_library.py` and the recorder
+status URL in `recorder_guard.py` describe the reference deployment; override
+them with `--source-root` / `--status-url` for other archives.
+
 ## Tests
 
 ```bash

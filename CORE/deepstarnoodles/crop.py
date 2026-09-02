@@ -131,6 +131,62 @@ def _centered_square_crop(
     return crop, float(left), float(top), float(side)
 
 
+centered_square_crop = _centered_square_crop
+
+
+def select_focal_detection(
+    dets: list[dict],
+    frame_diag: float,
+    last_center: tuple[float, float] | None,
+    max_jump_frac: float = 0.25,
+) -> dict | None:
+    """Pick one sunflower: nearest to last center within the jump gate, else largest box."""
+    if not dets:
+        return None
+    if last_center is not None:
+        max_jump = max_jump_frac * frame_diag
+        near = [
+            (math.dist(d["center"], last_center), d)
+            for d in dets
+            if math.dist(d["center"], last_center) <= max_jump
+        ]
+        if near:
+            near.sort(key=lambda t: t[0])
+            return near[0][1]
+    return max(dets, key=lambda d: (d["area"], d["confidence"]))
+
+
+def crop_from_xyxy(
+    frame_bgr: np.ndarray,
+    xyxy: tuple[float, float, float, float],
+    *,
+    roi: object | None = None,
+    context_scale: float = 2.0,
+    confidence: float = 0.0,
+    mask_polygon: np.ndarray | None = None,
+) -> CropResult:
+    """Build the locked 2x square Hydra crop from a stored box. No detector."""
+    from deepstarnoodles.roi import mask_crop_rgb, mask_source
+
+    source = mask_source(frame_bgr, roi) if roi is not None else frame_bgr
+    crop_bgr, left, top, side = _centered_square_crop(source, xyxy, context_scale)
+    crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+    polygon = mask_polygon
+    if roi is not None:
+        crop_rgb, polygon = mask_crop_rgb(crop_rgb, roi, left, top, side)
+    x1, y1, x2, y2 = xyxy
+    return CropResult(
+        crop_rgb=crop_rgb,
+        bbox_xyxy=(float(x1), float(y1), float(x2), float(y2)),
+        center=((float(x1) + float(x2)) / 2.0, (float(y1) + float(y2)) / 2.0),
+        confidence=float(confidence),
+        crop_left=left,
+        crop_top=top,
+        crop_side=side,
+        mask_polygon=polygon,
+    )
+
+
 def _crop_result(
     frame_bgr: np.ndarray,
     detection: dict,
