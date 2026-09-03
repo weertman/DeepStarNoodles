@@ -263,7 +263,7 @@ def load_train_statistics(
 
 def load_frozen_model(checkpoint_path: Path, device: torch.device) -> HydraModel:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    model = HydraModel(embedding_dim=8)
+    model = HydraModel(embedding_dim=8, pretrained_backbone=False)
     state = next(
         (
             checkpoint[key]

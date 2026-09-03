@@ -555,6 +555,7 @@ def main() -> int:
             model = HydraModel(
                 embedding_dim=embedding_dim,
                 count_classes=infer_count_classes(ckpt),
+                pretrained_backbone=False,
             ).to(args.device)
             model.load_state_dict(ckpt['model'])
             model.eval()

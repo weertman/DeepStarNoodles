@@ -55,9 +55,12 @@ class HydraPredictor:
         self.device = torch.device(config.device)
         ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
         self.output_spec = checkpoint_output_spec(ckpt) or {}
+        # The Hydra checkpoint carries the backbone weights, so Meta's separate
+        # DINOv3 file is not needed for inference (see GitHub issue #1).
         model = HydraModel(
             embedding_dim=infer_embedding_dim(ckpt),
             count_classes=infer_count_classes(ckpt),
+            pretrained_backbone=False,
         ).to(self.device)
         model.load_state_dict(_load_state_dict(ckpt, config.prefer_ema))
         model.eval()

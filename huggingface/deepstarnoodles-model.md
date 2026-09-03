@@ -29,7 +29,7 @@ Locked inference and retrain weights for [DeepStarNoodles](https://github.com/we
 | `tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt` | Noodle Tracer | `bb7f1b5da4f998006163b0bfbba005b417dfd6e8ab313d8e3869b7224fcc5c6c` |
 | `temporal_vae/dnt_progress_temporal_vae_60s_sleepy.pt` | Optional 60-second progress temporal VAE | `182de7d66d3b670c94e25d4f78070d7ffa5851acd76200cc7c059849b1abddc9` |
 
-First-party weights are MIT, matching the GitHub code. StarSeg inference uses Ultralytics (AGPL-3.0). The DINOv3 ConvNeXt-Base backbone is **not** in this repo; get `dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth` from Meta (SHA-256 `801f2ba95801bdcc9a8b77e293d38b35b355dbc813ef609cd82e18c3a185e8da`).
+First-party weights are MIT, matching the GitHub code. StarSeg inference uses Ultralytics (AGPL-3.0). The Hydra checkpoints include the fine-tuned DINOv3 ConvNeXt-Base backbone weights, so inference needs nothing else. Meta's original pretrained file `dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth` (SHA-256 `801f2ba95801bdcc9a8b77e293d38b35b355dbc813ef609cd82e18c3a185e8da`) is **not** in this repo and is only needed to train Hydra from scratch; it is distributed by Meta under the DINOv3 License.
 
 The temporal VAE is an inference-only export of the frozen DeepNoodleTracker
 checkpoint at step 10,250. It expects one support-weighted 64×64 progress raster
@@ -47,4 +47,4 @@ through the configurable representation API.
 hf download weertman/deepstarnoodles --local-dir MODELS
 ```
 
-Then place the Meta DINOv3 file at `MODELS/dinov3/dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth` and run `SCRIPTS/validate_artifacts.py`. That check skips Ultralytics `yolo26l-seg.pt` unless you add it for StarSeg from-scratch training.
+Then run `SCRIPTS/validate_artifacts.py --roles runtime-detector released-dense released-tracer`. Add the `pretrained-backbone` role only if you placed Meta's DINOv3 file at `MODELS/dinov3/dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth` for Hydra training. The check skips Ultralytics `yolo26l-seg.pt` unless you add it for StarSeg from-scratch training.

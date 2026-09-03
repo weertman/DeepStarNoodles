@@ -79,15 +79,31 @@ class DINOv3ConvNeXtBackbone(nn.Module):
         arch: str = 'dinov3_convnext_base',
         freeze: bool = True,
         activation_checkpointing: bool = False,
+        pretrained: bool = True,
     ) -> None:
+        """Build the ConvNeXt backbone from the vendored DINOv3 hub.
+
+        ``pretrained=True`` (training / from-scratch use) requires Meta's
+        DINOv3 checkpoint on disk. ``pretrained=False`` builds the architecture
+        with random weights and is the right choice whenever a full Hydra
+        ``state_dict`` is about to be loaded on top, because that state dict
+        already contains the backbone and would overwrite Meta's weights anyway.
+        """
         super().__init__()
         repo_dir = Path(repo_dir)
-        checkpoint = Path(checkpoint)
         if not repo_dir.exists():
             raise FileNotFoundError(f'DINOv3 repo not found: {repo_dir}')
-        if not checkpoint.exists():
-            raise FileNotFoundError(f'DINOv3 checkpoint not found: {checkpoint}')
-        self.backbone = cast(nn.Module, torch.hub.load(str(repo_dir), arch, source='local', weights=str(checkpoint), verbose=False))
+        if pretrained:
+            checkpoint = Path(checkpoint)
+            if not checkpoint.exists():
+                raise FileNotFoundError(f'DINOv3 checkpoint not found: {checkpoint}')
+            hub_kwargs = {'weights': str(checkpoint)}
+        else:
+            hub_kwargs = {'pretrained': False}
+        self.backbone = cast(
+            nn.Module,
+            torch.hub.load(str(repo_dir), arch, source='local', verbose=False, **hub_kwargs),
+        )
         self.activation_checkpointing = bool(activation_checkpointing)
         self.register_buffer('mean', torch.as_tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1), persistent=False)
         self.register_buffer('std', torch.as_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1), persistent=False)
@@ -139,6 +155,7 @@ class DINOv3ConvNeXtFPN(nn.Module):
         fpn_channels: int = 256,
         backbone: DINOv3ConvNeXtBackbone | None = None,
         activation_checkpointing: bool = False,
+        pretrained_backbone: bool = True,
     ) -> None:
         super().__init__()
         self.activation_checkpointing = bool(activation_checkpointing)
@@ -148,6 +165,7 @@ class DINOv3ConvNeXtFPN(nn.Module):
             else DINOv3ConvNeXtBackbone(
                 freeze=True,
                 activation_checkpointing=self.activation_checkpointing,
+                pretrained=pretrained_backbone,
             )
         )
         if hasattr(self.backbone, 'activation_checkpointing'):
@@ -209,7 +227,10 @@ class HydraModel(nn.Module):
         include_centerline: bool = True,
         activation_checkpointing: bool = False,
         fpn: nn.Module | None = None,
+        pretrained_backbone: bool = True,
     ) -> None:
+        """``pretrained_backbone=False`` skips Meta's DINOv3 file; use it when a
+        full Hydra ``state_dict`` (which includes the backbone) is loaded next."""
         super().__init__()
         self.activation_checkpointing = bool(activation_checkpointing)
         self.embedding_dim = int(embedding_dim)
@@ -227,6 +248,7 @@ class HydraModel(nn.Module):
             else DINOv3ConvNeXtFPN(
                 fpn_channels=fpn_channels,
                 activation_checkpointing=self.activation_checkpointing,
+                pretrained_backbone=pretrained_backbone,
             )
         )
         self.support_centerline_head = GroupNormResidualConvHead(

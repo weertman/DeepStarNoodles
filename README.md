@@ -67,8 +67,13 @@ hf auth login
 hf download weertman/deepstarnoodles --local-dir MODELS
 ```
 
-The DINOv3 ConvNeXt-Base backbone is distributed separately under Meta's
-DINOv3 License. Follow the
+The released Hydra checkpoints already contain the DINOv3 ConvNeXt-Base
+backbone weights, so **Hydra inference (DNT, `HydraPredictor`, evaluation,
+frozen-output caching) does not need any extra download**.
+
+Only Hydra training from scratch (`CORE/deepstarnoodles/train.py`) initializes
+the backbone from Meta's pretrained file, which is distributed separately under
+Meta's DINOv3 License. If you intend to train, follow the
 [official DINOv3 access instructions](https://github.com/facebookresearch/dinov3)
 and place this file in `MODELS/dinov3/`:
 
@@ -78,11 +83,12 @@ SHA-256 801f2ba95801bdcc9a8b77e293d38b35b355dbc813ef609cd82e18c3a185e8da
 ```
 
 Validate the runtime artifacts against the
-[artifact manifest](config/artifacts.json):
+[artifact manifest](config/artifacts.json) (add `pretrained-backbone` to the
+roles only if you downloaded the Meta file for training):
 
 ```bash
 python SCRIPTS/validate_artifacts.py \
-  --roles pretrained-backbone runtime-detector released-dense released-tracer
+  --roles runtime-detector released-dense released-tracer
 ```
 
 Hydra and Noodle Tracer training and evaluation require the
