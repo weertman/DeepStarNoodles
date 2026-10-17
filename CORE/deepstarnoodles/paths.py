@@ -127,7 +127,7 @@ DEFAULT_HYDRA_CHECKPOINT = MODELS_ROOT / "hydra" / "endpoint_mse_best.pt"
 DEFAULT_TRACER_CHECKPOINT = (
     MODELS_ROOT
     / "tracer"
-    / "noodle_tracer_seed20260807_endpoint_mse_calibrated.pt"
+    / "noodle_tracer_fullcorpus_seed20261011_calibrated.pt"
 )
 DEFAULT_TEMPORAL_VAE_CHECKPOINT = (
     MODELS_ROOT

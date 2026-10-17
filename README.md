@@ -137,8 +137,26 @@ identity embedding.
 
 ## Reported results
 
-The release result is recorded in
-[`config/locked/heldout_test.json`](config/locked/heldout_test.json). It covers
+The released Noodle Tracer (October 2026) was trained on all 4,062 training
+images, from every source family. Its locked held-out result is recorded in
+[`config/locked/fullcorpus_tracer_test_readout.json`](config/locked/fullcorpus_tracer_test_readout.json),
+with the analysis lock and validation-based selection alongside it. Each model
+was scored once, after the lock:
+
+| Test split | Arm F1 | Group-macro F1 | Precision | Recall | Mean Chamfer |
+| --- | --- | --- | --- | --- | --- |
+| Sleepy Stars (63 images, 5 groups) | **0.868** | 0.855 | 0.912 | 0.828 | 3.14 |
+| Other source families (439 images, 178 groups) | **0.854** | 0.836 | 0.888 | 0.822 | 2.72 |
+
+Against the previous Sleepy-only tracer on the same cached Hydra outputs, arm
+F1 rose by **+0.030** (95% CI +0.005 to +0.054, 5 groups) on Sleepy Stars and
+by **+0.017** (+0.009 to +0.026, 178 groups) on the other families. The Sleepy
+test split had been viewed before this readout. See
+[`docs/published-tracer.md`](docs/published-tracer.md) for the selection record.
+
+The figures below describe the **previous** Sleepy-only tracer (August 2026
+release), recorded in
+[`config/locked/heldout_test.json`](config/locked/heldout_test.json). They cover
 the complete 63-image test split of the **Sleepy** data-collection subset,
 identified as `source_family=sleepy_stars` in the dataset metadata. Those
 images belong to five leakage-separated `split_group_id` groups.
@@ -190,17 +208,21 @@ The inference recipe consists of:
    `Pycnopodia_helianthoides`;
 2. `MODELS/hydra/endpoint_mse_best.pt`, an endpoint-head fine-tune of the
    18-channel parent checkpoint `MODELS/hydra/epoch_060.pt`;
-3. `MODELS/tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt`, a
-   Noodle Tracer with a 33×33 dense patch, frozen MobileNetV3-Small RGB
-   encoder, 128-unit GRU, single-scale context, 8-pixel lookahead, 0.5–6-pixel
-   step range, and invalid-seed threshold 0.4.
+3. `MODELS/tracer/noodle_tracer_fullcorpus_seed20261011_calibrated.pt`, a
+   Noodle Tracer trained on all source families, with a 33×33 dense patch,
+   frozen MobileNetV3-Small RGB encoder, 128-unit GRU, single-scale context,
+   8-pixel lookahead, 0.5–6-pixel step range, and invalid-seed threshold 0.6.
+   The previous Sleepy-only tracer,
+   `MODELS/tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt`
+   (invalid-seed threshold 0.4), remains available.
 
 Full SHA-256 values and artifact roles are maintained in
 [`config/artifacts.json`](config/artifacts.json).
 
 Hydra uses grouped splits created with seed 20260718: **4,062 training**, **478
 validation**, and **502 test** images. Related captures remain in the same
-group. Noodle Tracer uses the Sleepy rows within those splits: **403
+group. The released Noodle Tracer trains on all 4,062 training images. The
+previous tracer used only the Sleepy rows within those splits: **403
 training**, **34 validation**, and **63 test** images.
 
 ## Repository layout

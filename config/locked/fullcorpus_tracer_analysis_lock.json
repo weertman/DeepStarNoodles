@@ -1,0 +1,31 @@
+{
+  "test_access_locked": true,
+  "created_at": "2026-10-17T05:58:14.622759+00:00",
+  "protocol": "[redacted-parent]/runs/gru_corpus_vs_sleepy_local_20261011/MODEL_SELECTION_PROTOCOL.md",
+  "protocol_sha256": "ca8e63461fb3aa9785d291a9b165fefb3dbca6f5335986a147b931eb0c013700",
+  "selection_sha256": "bdd91ed24c7f9deb8dd26d198ec535a6c97b0431d03937e38a0287ecaaeb1ead",
+  "chosen": {
+    "checkpoint": "[redacted-parent]/runs/gru_corpus_vs_sleepy_local_20261011/arms/full/training/seed20261011/g0030/last.pt",
+    "checkpoint_sha256": "d546eea44931f521b82bef1c93a7dda319b850e541d443f0c8231bcd5521926a",
+    "cycle": 30,
+    "seed": 20261011,
+    "hydra": "R",
+    "hydra_sha256": "dcf7140c9ef0129d8f66b33b05af6d0ebb064f84b41ce61e51e67061799e3f02",
+    "invalid_seed_threshold": 0.6
+  },
+  "incumbent": {
+    "checkpoint": "MODELS/tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt",
+    "checkpoint_sha256": "bb7f1b5da4f998006163b0bfbba005b417dfd6e8ab313d8e3869b7224fcc5c6c",
+    "hydra": "R",
+    "hydra_sha256": "dcf7140c9ef0129d8f66b33b05af6d0ebb064f84b41ce61e51e67061799e3f02",
+    "invalid_seed_threshold": 0.4
+  },
+  "test_source_index_sha256": "666a56e9e7b011744f4946c0d3bf18ebaba0b3aad4da679288ced5d4a48df686",
+  "normalization_sha256": "d850bc22bb5813787d7171913d2b93f4d291bbf4f83ef2383bf6780ca3388a32",
+  "metric": "arm F1, 8 px Chamfer matching; precision, recall, group-macro F1, Chamfer",
+  "contrast": "chosen minus incumbent, paired group bootstrap (2000 draws) per test cohort",
+  "cohorts": {
+    "sleepy": "63 images, 5 groups, previously viewed",
+    "non_sleepy": "439 images"
+  }
+}
