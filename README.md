@@ -137,63 +137,77 @@ identity embedding.
 
 ## Reported results
 
-The released Noodle Tracer (October 2026) was trained on all 4,062 training
-images, from every source family. Its locked held-out result is recorded in
-[`config/locked/fullcorpus_tracer_test_readout.json`](config/locked/fullcorpus_tracer_test_readout.json),
-with the analysis lock and validation-based selection alongside it. Each model
-was scored once, after the lock:
+### Released Noodle Tracer (October 2026)
+
+The released tracer was selected on validation by a rule written before any
+test access, then scored once on the held-out test splits under an analysis
+lock. Both test splits are separated from training by `split_group_id`. Arms
+are greedily matched one-to-one when their symmetric Chamfer distance is at
+most 8 model-crop pixels; distances are in model-crop pixels.
 
 | Test split | Arm F1 | Group-macro F1 | Precision | Recall | Mean Chamfer |
 | --- | --- | --- | --- | --- | --- |
-| Sleepy Stars (63 images, 5 groups) | **0.868** | 0.855 | 0.912 | 0.828 | 3.14 |
-| Other source families (439 images, 178 groups) | **0.854** | 0.836 | 0.888 | 0.822 | 2.72 |
+| Sleepy Stars, `source_family=sleepy_stars` (63 images, 5 groups) | **0.868** | 0.855 | 0.912 | 0.828 | 3.14 |
+| All other source families (439 images, 178 groups) | **0.854** | 0.836 | 0.888 | 0.822 | 2.72 |
 
-Against the previous Sleepy-only tracer on the same cached Hydra outputs, arm
-F1 rose by **+0.030** (95% CI +0.005 to +0.054, 5 groups) on Sleepy Stars and
-by **+0.017** (+0.009 to +0.026, 178 groups) on the other families. The Sleepy
-test split had been viewed before this readout. See
-[`docs/published-tracer.md`](docs/published-tracer.md) for the selection record.
+On the same images and Hydra outputs, the previous Sleepy-only tracer scored
+0.838 and 0.837. The paired group-bootstrap differences in arm F1 are
+**+0.030** on Sleepy Stars (95% CI +0.005 to +0.054) and **+0.017** on the
+other families (95% CI +0.009 to +0.026).
 
-The figures below describe the **previous** Sleepy-only tracer (August 2026
-release), recorded in
-[`config/locked/heldout_test.json`](config/locked/heldout_test.json). They cover
-the complete 63-image test split of the **Sleepy** data-collection subset,
-identified as `source_family=sleepy_stars` in the dataset metadata. Those
-images belong to five leakage-separated `split_group_id` groups.
+- The Sleepy test split was viewed during earlier development, and its
+  interval rests on five groups. The 178-group split is the stronger evidence.
+- The readout ran on CPU in float32. It reproduces the previous tracer's
+  archived Sleepy result (F1 0.8366) as 0.8375.
+- Crossing-subset, base-termination, and geometric-baseline figures have not
+  been computed for the released tracer.
 
-Arms are greedily matched one-to-one when their symmetric Chamfer distance is
-at most 8 model-crop pixels. All reported distances below are in model-crop
-pixels.
+The records are
+[`fullcorpus_tracer_analysis_lock.json`](config/locked/fullcorpus_tracer_analysis_lock.json),
+[`fullcorpus_tracer_selection.json`](config/locked/fullcorpus_tracer_selection.json),
+and
+[`fullcorpus_tracer_test_readout.json`](config/locked/fullcorpus_tracer_test_readout.json)
+in `config/locked/`. The decision record,
+[`docs/published-tracer.md`](docs/published-tracer.md), explains the selection
+and its caveats.
 
-- Noodle Tracer aggregate precision, recall, and F1 are **0.859**, **0.815**,
-  and **0.837**. Mean and p90 Chamfer distances are **3.389** and **5.761**.
-- Equal-group macro precision, recall, and F1 are **0.850**, **0.802**, and
-  **0.824**. Group-macro mean and p90 Chamfer distances are **3.487** and
+### Previous tracer (August 2026)
+
+The previous Sleepy-only tracer remains available as
+`MODELS/tracer/noodle_tracer_seed20260807_endpoint_mse_calibrated.pt`. Its
+archived report, [`config/locked/heldout_test.json`](config/locked/heldout_test.json),
+covers the same 63-image Sleepy test split:
+
+- Aggregate precision, recall, and F1 were **0.859**, **0.815**, and
+  **0.837**. Mean and p90 Chamfer distances were **3.389** and **5.761**.
+- Equal-group macro precision, recall, and F1 were **0.850**, **0.802**, and
+  **0.824**. Group-macro mean and p90 Chamfer distances were **3.487** and
   **5.645**.
 - Of 617 emitted traces, 616 terminated at the model's base condition
   (**99.84%**). This is a decoder termination statistic, not an independent
   biological accuracy measure.
-- The embedding-aware Dijkstra geometric baseline has aggregate F1 **0.777**
-  and group-macro F1 **0.757** on the same cached Hydra outputs.
-- A paired bootstrap over the five split groups estimates an aggregate F1
-  improvement of **0.062** over that baseline (95% CI **0.043–0.097**; 2,000
-  resamples).
+- The embedding-aware Dijkstra geometric baseline had aggregate F1 **0.777**
+  and group-macro F1 **0.757** on the same cached Hydra outputs. A paired
+  bootstrap over the five split groups estimated an aggregate F1 improvement
+  of **0.062** over that baseline (95% CI **0.043–0.097**; 2,000 resamples).
+- Fifty of the 63 test images are marked as containing an arm crossing.
+  Aggregate F1 on that subset was **0.795**, with mean Chamfer distance
+  **3.663**.
 
-Arm crossings remain difficult. Fifty of the 63 test images are marked as
-containing a crossing; aggregate F1 on that subset is **0.795**, with mean
-Chamfer distance **3.663**.
-
-The JSON report is the canonical record for this release and contains the
-artifact, cache, evaluator, and decoder hashes used to produce it. It is
-archival provenance rather than a claim that the current checkout can
-regenerate the report bit for bit.
+That JSON report contains the artifact, cache, evaluator, and decoder hashes
+used to produce it. It is archival provenance rather than a claim that the
+current checkout can regenerate the report bit for bit.
 
 ## Limitations
 
-- The released arm-tracing evaluation is limited to the Sleepy subset and may
-  not represent other imaging conditions, life stages, or species.
-- Performance is lower when arms cross or overlap. The crossing subset result
-  above should be considered when selecting downstream analyses.
+- The released tracer was tested on held-out images from the dataset's own
+  source families: 63 Sleepy Stars images and 439 from the other families.
+  It may not transfer to other imaging conditions, life stages, or species.
+- Performance is lower when arms cross or overlap. For the previous tracer,
+  F1 on test images with a crossing was 0.795, against 0.837 overall. The
+  released tracer's crossing subset has not been measured.
+- The released tracer was trained with a pipeline that is not yet part of this
+  repository; see [Noodle Tracer training](#noodle-tracer).
 - Geometric errors are reported in model-crop pixels. No physical-length
   calibration is provided by the inference pipeline.
 - Video association has not been validated as biological arm identity.
@@ -286,6 +300,29 @@ output directory.
 
 ### Noodle Tracer
 
+The released tracer was trained with the refreshed-augmentation pipeline of
+the unpublished DeepNoodleTracker development repository. That pipeline has not
+yet been ported here. Its recipe:
+
+- train on all 4,062 training images, from every source family;
+- run 30 cycles. In each cycle, every image gets a fresh geometric and
+  photometric augmentation, the frozen parent Hydra (`epoch_060.pt`) is rerun
+  on the augmented image, and the tracer makes exactly 4,000 updates at batch
+  size 1;
+- normalize the dense channels with fixed statistics from non-Sleepy training
+  pixels;
+- warm the learning rate up over two cycles, then decay it from 3e-4 to 3e-5 on
+  a cosine schedule, and ramp rollout training to 30% by cycle 12;
+- select the invalid-seed threshold (0.6) on non-Sleepy validation.
+
+[`docs/published-tracer.md`](docs/published-tracer.md) records the full
+provenance, including a continuation to 64 cycles that gave no further gain.
+
+The commands below use this repository's scripts. They reproduce the
+**previous** Sleepy-only recipe: one fixed cache of the Sleepy training and
+validation rows, with augmentation applied to the cached outputs during
+training.
+
 Prepare the Sleepy training and validation rows and cache the frozen parent
 Hydra outputs:
 
@@ -331,9 +368,11 @@ python SCRIPTS/evaluate_noodle_tracer.py \
 ```
 
 Held-out test access requires a lock generated from an exactly matching
-validation configuration. The archived release result is provided in
+validation configuration. The previous tracer's archived result is provided in
 [`config/locked/heldout_test.json`](config/locked/heldout_test.json); its lock
-token is not a reusable token for newly trained models.
+token is not a reusable token for newly trained models. The released tracer's
+analysis lock and test readout were produced by the DeepNoodleTracker pipeline
+and are recorded in `config/locked/fullcorpus_tracer_*.json`.
 
 ### Dense geometric decoding
 
@@ -349,8 +388,8 @@ python -m deepstarnoodles.evaluate_decode \
   --out-json RUNS/evaluate_decode/grouped_test.json
 ```
 
-This 502-image evaluation has a different scope from the archived
-63-image Sleepy comparison reported above.
+This measures Hydra's geometric decoders, not the Noodle Tracer. The tracer
+results reported above come from their own locked evaluation.
 
 ## Advanced video inference
 

@@ -114,7 +114,9 @@ arm, which confirms the pipeline matches.
   paths redacted.
 - Hugging Face `weertman/deepstarnoodles`: the new checkpoint and an updated model card. The
   previous tracer file stays.
-- README: the results and recipe sections are updated.
+- README: the results, limitations, recipe and training sections are updated. The
+  training section notes that the released recipe has not yet been ported to this
+  repository.
 
 Not changed: the manuscript workspace under `paper/`. Its arm-recovery numbers (0.8366 on
 63 images, 0.8219 on 502 images) still describe the previous tracer.
