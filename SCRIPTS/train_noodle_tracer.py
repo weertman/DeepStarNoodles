@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-study-root", type=Path,
                         help="Use a separate fixed validation cohort and cache.")
     parser.add_argument("--repeated-train-cache", action="store_true",
-                        help="Allow complete repeated augmented draws of a cohort for matched-update comparisons.")
+                        help="Train on a generation with several augmented draws of every image.")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=20260807)
@@ -623,8 +623,8 @@ def main() -> int:
         source_count = int(contract["splits"]["train"]["records"])
         draws = int(repeated_manifest.get("provenance", {}).get("draws_per_image", 0))
         records = repeated_manifest.get("records", [])
-        if contract.get("cohort") != "sleepy" or draws < 2 or len(records) != source_count * draws:
-            raise ValueError("repeated training cache does not cover complete Sleepy draws")
+        if draws < 2 or len(records) != source_count * draws:
+            raise ValueError("repeated training cache does not cover complete augmented draws")
         counts = [0] * source_count
         for record in records:
             source_index = int(record.get("source_row_index", -1))

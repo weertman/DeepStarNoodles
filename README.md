@@ -385,6 +385,56 @@ uses ten augmented draws of each of the 403 Sleepy training images and the same
 4,000-update budget. To recompute the normalization statistics from the data,
 see [`SCRIPTS/write_tracer_normalization.py`](SCRIPTS/write_tracer_normalization.py).
 
+#### Adapting the tracer to new scenes
+
+The same pipeline trains on your own annotated images. You need:
+
+- one annotation file per image: a JSON list of shapes in which each arm is
+  `{"label": "arm", "type": "polyline", "points": [x0, y0, x1, y1, ...]}` in
+  source-image pixels, ordered from the central disk to the arm tip. CVAT
+  polyline annotations exported to this layout work directly;
+- `train_index.csv`, `validation_index.csv`, and `test_index.csv` in one
+  directory, with the columns `image_path`, `shapes_path`, `width`, `height`,
+  and `split_group_id`. Paths may be absolute or relative to the repository
+  root. Put related captures (the same animal, session, or video) in one
+  group; no group may span two splits.
+
+Train with `--cohort all --validation-cohort all`, because the `sleepy` and
+`non_sleepy` cohorts check the distributed split counts. To start from the
+released weights instead of a random initialization, add `--init-checkpoint`:
+
+```bash
+python SCRIPTS/train_noodle_tracer_refreshed.py \
+  --output RUNS/noodle_tracer_my_scene \
+  --split-dir path/to/my_splits \
+  --cohort all --validation-cohort all \
+  --init-checkpoint MODELS/tracer/noodle_tracer_fullcorpus_seed20261011_calibrated.pt \
+  --cycles 10
+```
+
+- The learning rate still warms up and then decays over `--cycles`; pass, for
+  example, `--trainer-args "--lr 1e-4"` to lower its peak. Fine-tuning budgets
+  have not been benchmarked, so choose the number of cycles on your validation
+  split.
+- For a small dataset, `--draws-per-image 4` gives each image four different
+  augmentations per cycle, so the 4,000 updates of a cycle (`--steps-per-cycle`)
+  see more distinct views.
+- To keep accuracy on the original scenes, append your rows to the distributed
+  split indexes instead of replacing them. In our experiments, training on
+  every source family generalized better to other scenes than training on the
+  Sleepy subset alone.
+- The tracer starts from Hydra's tip detections and reads its dense fields. If
+  Hydra misses arms in the new scene, fine-tune Hydra first (see
+  [Hydra](#hydra)), pass it with `--checkpoint`, and write a matching
+  normalization file with
+  [`SCRIPTS/write_tracer_normalization.py`](SCRIPTS/write_tracer_normalization.py);
+  the shipped statistics describe `epoch_060.pt`.
+
+Calibrate the threshold and score the result on your own validation split with
+`cache_fixed_tracer_split.py --cohort all --split-dir path/to/my_splits`,
+followed by `calibrate_noodle_tracer.py` and `evaluate_tracer_split.py` as
+above.
+
 #### Previous recipe: fixed Sleepy cache
 
 The commands below reproduce the previous Sleepy-only tracer: one fixed cache

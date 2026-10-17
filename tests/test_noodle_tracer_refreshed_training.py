@@ -177,3 +177,38 @@ def test_split_evaluator_scores_compares_and_gates_test(monkeypatch, study, tmp_
     lock.write_text(json.dumps({"test_access_locked": True, "frozen_checkpoint_sha256": "x",
                                 "chosen": {"checkpoint_sha256": digest}}), encoding="utf-8")
     assert evaluate_tracer_split.check_lock(lock, [checkpoint])["test_access_locked"] is True
+
+
+def test_warm_start_loads_weights_and_keeps_fixed_normalization(monkeypatch, study):
+    source = run_trainer(monkeypatch, study, "source", 1) / "last.pt"
+    # With a vanishing learning rate the warm-started run ends where it began.
+    warm = run_trainer(monkeypatch, study, "warm", 1, "--init-checkpoint", str(source),
+                       "--lr", "1e-30", "--min-lr", "1e-30")
+    cold = run_trainer(monkeypatch, study, "cold", 1, "--lr", "1e-30", "--min-lr", "1e-30")
+    before = torch.load(source, map_location="cpu", weights_only=False)["model"]
+    after = torch.load(warm / "last.pt", map_location="cpu", weights_only=False)["model"]
+    scratch = torch.load(cold / "last.pt", map_location="cpu", weights_only=False)["model"]
+    assert set(before) == set(after)
+    assert all(torch.allclose(before[key].float(), after[key].float(), rtol=0, atol=1e-12)
+               for key in before)
+    assert not all(torch.allclose(before[key].float(), scratch[key].float(), rtol=0, atol=1e-6)
+                   for key in before)
+
+
+def test_repeated_augmented_draws_train_for_any_cohort(monkeypatch, study):
+    root = study["train"]
+    manifest_path = root / "cache" / "train_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    contract = json.loads((root / "experiment_contract.json").read_text(encoding="utf-8"))
+    contract["splits"]["train"]["records"] = 1
+    (root / "experiment_contract.json").write_text(json.dumps(contract), encoding="utf-8")
+    records = manifest["records"][:2]
+    for draw, record in enumerate(records):
+        record.update(source_row_index=0, draw=draw)
+    manifest["records"] = records
+    manifest["provenance"]["draws_per_image"] = 2
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="record count differs"):
+        run_trainer(monkeypatch, study, "plain", 1)
+    out_dir = run_trainer(monkeypatch, study, "repeated", 1, "--repeated-train-cache")
+    assert float(last_row(out_dir)["train_optimizer_steps"]) == 5.0

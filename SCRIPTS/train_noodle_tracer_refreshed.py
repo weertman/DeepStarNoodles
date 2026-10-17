@@ -21,6 +21,10 @@ invalid-seed threshold afterwards with ``calibrate_noodle_tracer.py``.
 ``--cohort sleepy --draws-per-image 10`` gives the matched-update Sleepy-only
 comparison: ten augmented draws of each Sleepy image per cycle and the same
 update budget.
+
+To adapt the tracer to new scenes, point ``--split-dir`` at your own split
+indexes, use ``--cohort all --validation-cohort all``, and optionally start from
+the released weights with ``--init-checkpoint``.
 """
 from __future__ import annotations
 
@@ -78,6 +82,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--augmentation-seed", type=int, default=RELEASED_AUGMENTATION_SEED)
     parser.add_argument("--draws-per-image", type=int, default=1,
                         help="augmented draws of each training image per cycle")
+    parser.add_argument("--init-checkpoint", type=Path,
+                        help="start cycle 1 from these tracer weights (for example the released "
+                             "tracer) instead of a random initialization")
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--num-workers", type=int, default=4, help="training data-loader workers")
     parser.add_argument("--generation-batch-size", type=int, default=4)
@@ -90,8 +97,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.cycles < 1 or args.steps_per_cycle < 1 or args.draws_per_image < 1:
         parser.error("--cycles, --steps-per-cycle and --draws-per-image must be positive")
-    if args.draws_per_image > 1 and args.cohort != "sleepy":
-        parser.error("--draws-per-image > 1 is supported for the Sleepy cohort only")
     return args
 
 
@@ -153,6 +158,8 @@ def trainer_command(args: argparse.Namespace, cycle: int) -> list[str]:
         command.append("--repeated-train-cache")
     if cycle > 1:
         command += ["--resume", str(run_dir(args.output, cycle - 1) / "last.pt")]
+    elif args.init_checkpoint is not None:
+        command += ["--init-checkpoint", str(args.init_checkpoint)]
     return command + shlex.split(args.trainer_args)
 
 
@@ -175,6 +182,8 @@ def write_recipe(args: argparse.Namespace, contract: dict) -> None:
                                   if k in ("images", "annotated_arm_polylines", "source_families")}
                           for split, values in contract["splits"].items()},
         "hydra_sha256": sha256_file(args.checkpoint),
+        "init_checkpoint_sha256": (sha256_file(args.init_checkpoint)
+                                   if args.init_checkpoint is not None else None),
         "normalization_sha256": sha256_file(args.normalization_json),
         "split_index_sha256": {split: sha256_file(args.split_dir / f"{split}_index.csv")
                                for split in ("train", "validation", "test")},
@@ -185,7 +194,8 @@ def write_recipe(args: argparse.Namespace, contract: dict) -> None:
     }
     if path.is_file():
         previous = json.loads(path.read_text(encoding="utf-8"))
-        for key in ("hydra_sha256", "normalization_sha256", "split_index_sha256", "contract_id"):
+        for key in ("hydra_sha256", "normalization_sha256", "split_index_sha256", "contract_id",
+                    "init_checkpoint_sha256"):
             if previous.get(key) != recipe[key]:
                 raise SystemExit(f"{path} records a different {key}; use a new --output directory")
         for key in ("cohort", "cycles", "steps_per_cycle", "seed", "augmentation_seed",
@@ -203,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     args.checkpoint = args.checkpoint.expanduser().resolve()
     args.split_dir = args.split_dir.expanduser().resolve()
     args.normalization_json = args.normalization_json.expanduser().resolve()
+    if args.init_checkpoint is not None:
+        args.init_checkpoint = args.init_checkpoint.expanduser().resolve()
     (args.output / "logs").mkdir(parents=True, exist_ok=True)
     contract_path = args.output / "experiment_contract.json"
     if contract_path.is_file():

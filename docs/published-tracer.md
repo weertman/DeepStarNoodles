@@ -55,7 +55,9 @@ split indexes, on CPU:
   metrics;
 - the one-command driver reproduces those weights.
 
-On a GPU, mixed precision makes retraining produce similar, not identical, weights.
+On a GPU, mixed precision makes retraining produce similar, not identical, weights. The
+same driver adapts the tracer to new scenes from user-supplied split indexes, optionally
+warm-started from the released weights with `--init-checkpoint`; see the README.
 
 ## Why this model
 

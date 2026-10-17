@@ -126,8 +126,12 @@ def test_refreshed_driver_defaults_are_the_released_recipe():
     assert (args.seed, args.augmentation_seed, args.validation_cohort) == (20261011, 20261011, "sleepy")
     assert args.checkpoint.name == "epoch_060.pt"
     assert args.normalization_json == REPO / "config/recipes/noodle_tracer_fullcorpus_normalization.json"
+    assert args.init_checkpoint is None
+    adapted = parse_args(["--output", "RUNS/x", "--draws-per-image", "10",
+                          "--init-checkpoint", "MODELS/tracer/released.pt"])
+    assert adapted.draws_per_image == 10 and adapted.init_checkpoint.name == "released.pt"
     with pytest.raises(SystemExit):
-        parse_args(["--output", "RUNS/x", "--draws-per-image", "10"])
+        parse_args(["--output", "RUNS/x", "--cycles", "0"])
 
 
 def test_shipped_normalization_matches_the_released_checkpoint():
