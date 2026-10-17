@@ -11,6 +11,7 @@ import math
 import os
 import random
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -55,10 +56,19 @@ DEFAULT_STUDY = REPO / "RUNS/noodle_tracer_sleepy18"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--study-root", type=Path, default=DEFAULT_STUDY)
+    parser.add_argument("--validation-study-root", type=Path,
+                        help="Use a separate fixed validation cohort and cache.")
+    parser.add_argument("--repeated-train-cache", action="store_true",
+                        help="Allow complete repeated augmented draws of a cohort for matched-update comparisons.")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=20260807)
     parser.add_argument("--epochs", type=int, default=24)
+    parser.add_argument(
+        "--steps-per-epoch",
+        type=int,
+        help="Run this many successful optimizer updates per epoch, cycling the loader as needed.",
+    )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -107,9 +117,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--resume", type=Path)
     parser.add_argument(
+        "--extend-lr-decay-on-resume",
+        action="store_true",
+        help="Permit a longer LR schedule when resuming within the unchanged warmup phase.",
+    )
+    parser.add_argument(
+        "--override-schedule-on-resume",
+        action="store_true",
+        help="Permit a resumed run to change only --lr, --min-lr, --lr-decay-epochs and "
+             "--warmup-epochs (epochs stay absolute); the change is recorded in the checkpoint.",
+    )
+    parser.add_argument(
+        "--relocate-resume-paths",
+        action="store_true",
+        help="Permit a resumed run whose study, validation, and normalization paths moved "
+             "to another machine; dense normalization values must still match exactly.",
+    )
+    parser.add_argument(
         "--init-checkpoint",
         type=Path,
         help="Warm-start model weights without restoring optimizer/RNG state.",
+    )
+    parser.add_argument(
+        "--normalization-json",
+        type=Path,
+        help="Explicit shared dense mean/std JSON; overrides buffers in warm-start checkpoints.",
     )
     parser.add_argument("--rgb-lr-multiplier", type=float, default=0.1)
     parser.add_argument("--max-train-images", type=int)
@@ -117,8 +149,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+SCHEDULE_SIGNATURE_KEYS = ("lr", "min_lr", "lr_decay_epochs", "warmup_epochs")
+RELOCATABLE_SIGNATURE_PATHS = (
+    "study_root", "validation_study_root", "normalization_json",
+)
+
+
 def training_signature(args: argparse.Namespace) -> dict[str, Any]:
-    excluded = {"epochs", "out_dir", "resume", "device", "init_checkpoint"}
+    excluded = {"epochs", "out_dir", "resume", "device", "init_checkpoint",
+                "extend_lr_decay_on_resume", "relocate_resume_paths",
+                "override_schedule_on_resume"}
     return {
         key: value
         for key, value in vars(args).items()
@@ -248,6 +288,7 @@ def train_or_score_batch(
             "matched_arms": 0.0,
             "false_tips": 0.0,
             "ignored_tips": float(teachers.ignored_tips),
+            "optimizer_steps": 0.0,
         }
     teachers = _move_teachers(teachers, device)
     count = len(teachers.seed_positions)
@@ -393,18 +434,22 @@ def train_or_score_batch(
         + args.support_weight * support_loss
         + args.endpoint_weight * endpoint_loss
     )
+    optimizer_steps = 0.0
     if training:
         optimizer.zero_grad(set_to_none=True)
         if scaler is not None and amp_enabled:
+            previous_scale = scaler.get_scale()
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             scaler.step(optimizer)
             scaler.update()
+            optimizer_steps = float(scaler.get_scale() >= previous_scale)
         else:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             optimizer.step()
+            optimizer_steps = 1.0
     return {
         "loss": float(loss.detach()),
         "action_loss": float(action_loss.detach()),
@@ -415,6 +460,7 @@ def train_or_score_batch(
         "matched_arms": float(teachers.matched_arms),
         "false_tips": float(teachers.false_tips),
         "ignored_tips": float(teachers.ignored_tips),
+        "optimizer_steps": optimizer_steps,
     }
 
 
@@ -427,13 +473,31 @@ def run_loader(
     scaler: torch.amp.GradScaler | None,
     args: argparse.Namespace,
     rollout_p: float,
+    optimizer_steps: int | None = None,
+    progress_path: Path | None = None,
+    epoch: int | None = None,
 ) -> dict[str, float]:
     model.train(optimizer is not None)
     sums: dict[str, float] = {}
     count = 0
     context = torch.enable_grad() if optimizer is not None else torch.no_grad()
+    realized_optimizer_steps = 0
+    images_seen = 0
+    started = time.monotonic()
     with context:
-        for batch in loader:
+        iterator = iter(loader)
+        exhausted_cycles = 0
+        while True:
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                if optimizer is None or optimizer_steps is None:
+                    break
+                exhausted_cycles += 1
+                if exhausted_cycles > 1 and realized_optimizer_steps == 0:
+                    raise RuntimeError("full training loader produced no optimizer updates")
+                iterator = iter(loader)
+                continue
             result = train_or_score_batch(
                 model,
                 batch,
@@ -447,7 +511,24 @@ def run_loader(
             for key, value in result.items():
                 sums[key] = sums.get(key, 0.0) + value
             count += 1
-    return {key: value / max(count, 1) for key, value in sums.items()}
+            images_seen += len(batch["raw"])
+            realized_optimizer_steps += int(result.get("optimizer_steps", 0.0))
+            if progress_path is not None and (count % 25 == 0 or
+                                              (optimizer_steps is None and count == len(loader))):
+                progress = {
+                    "stage": "training", "epoch": epoch,
+                    "images_seen": images_seen,
+                    "total_images": len(loader.dataset),
+                    "optimizer_steps": realized_optimizer_steps,
+                    "target_optimizer_steps": optimizer_steps,
+                    "elapsed_seconds": round(time.monotonic() - started, 2),
+                }
+                _atomic_json(progress_path, progress)
+            if optimizer_steps is not None and realized_optimizer_steps >= optimizer_steps:
+                break
+    output = {key: value / max(count, 1) for key, value in sums.items()}
+    output["optimizer_steps"] = float(realized_optimizer_steps)
+    return output
 
 
 @torch.no_grad()
@@ -513,7 +594,13 @@ def _atomic_json(path: Path, value: object) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.steps_per_epoch is not None and args.steps_per_epoch < 1:
+        raise ValueError("--steps-per-epoch must be a positive integer")
     args.study_root = args.study_root.expanduser().resolve()
+    args.validation_study_root = (
+        args.validation_study_root.expanduser().resolve()
+        if args.validation_study_root is not None else args.study_root
+    )
     args.out_dir = args.out_dir.expanduser().resolve()
     args.out_dir.mkdir(parents=True, exist_ok=False)
     random.seed(args.seed)
@@ -525,9 +612,32 @@ def main() -> int:
         (args.study_root / "experiment_contract.json").read_text(encoding="utf-8")
     )
     train_manifest = args.study_root / "cache/train_manifest.json"
-    val_manifest = args.study_root / "cache/validation_manifest.json"
+    validation_contract = json.loads(
+        (args.validation_study_root / "experiment_contract.json").read_text(encoding="utf-8")
+    )
+    if validation_contract["frozen_checkpoint_sha256"] != contract["frozen_checkpoint_sha256"]:
+        raise ValueError("training and validation use different frozen dense checkpoints")
+    val_manifest = args.validation_study_root / "cache/validation_manifest.json"
+    if args.repeated_train_cache:
+        repeated_manifest = json.loads(train_manifest.read_text(encoding="utf-8"))
+        source_count = int(contract["splits"]["train"]["records"])
+        draws = int(repeated_manifest.get("provenance", {}).get("draws_per_image", 0))
+        records = repeated_manifest.get("records", [])
+        if contract.get("cohort") != "sleepy" or draws < 2 or len(records) != source_count * draws:
+            raise ValueError("repeated training cache does not cover complete Sleepy draws")
+        counts = [0] * source_count
+        for record in records:
+            source_index = int(record.get("source_row_index", -1))
+            if source_index < 0 or source_index >= source_count:
+                raise ValueError("repeated cache has an invalid source row index")
+            counts[source_index] += 1
+        if any(count != draws for count in counts):
+            raise ValueError("repeated cache is missing augmented source draws")
+        contract = {**contract, "splits": {**contract["splits"], "train": {
+            **contract["splits"]["train"], "records": len(records)
+        }}}
     validate_cache_manifest(train_manifest, contract, split="train")
-    validate_cache_manifest(val_manifest, contract, split="validation")
+    validate_cache_manifest(val_manifest, validation_contract, split="validation")
     mean, std = channel_statistics(train_manifest)
     mean, std = mean[:18], std[:18]
     train_dataset = FrozenOutputDataset(
@@ -574,14 +684,79 @@ def main() -> int:
     best_smoothed_f1 = -math.inf
     recent_f1: list[float] = []
     restored_state = None
+    lr_decay_extension = None
+    path_relocation = None
+    schedule_override = None
     if args.resume is not None:
         model, trace_params, metadata, restored_state = load_noodle_tracer_checkpoint(
             str(args.resume.expanduser().resolve()),
             device=device,
         )
         expected_signature = metadata.get("training_signature")
-        if expected_signature != training_signature(args):
-            raise ValueError("resume training signature differs from current arguments")
+        current_signature = training_signature(args)
+        lr_decay_extension = metadata.get("lr_decay_extension")
+        path_relocation = metadata.get("path_relocation")
+        if args.relocate_resume_paths and isinstance(expected_signature, dict):
+            moved = {
+                key: {"previous": expected_signature.get(key), "current": current_signature.get(key)}
+                for key in RELOCATABLE_SIGNATURE_PATHS
+                if expected_signature.get(key) != current_signature.get(key)
+            }
+            if moved:
+                if args.normalization_json is None:
+                    raise ValueError("relocated resume requires an explicit --normalization-json")
+                normalization = json.loads(
+                    args.normalization_json.expanduser().resolve().read_text(encoding="utf-8")
+                )
+                if (
+                    not torch.equal(model.dense_mean.flatten().cpu(),
+                                    torch.as_tensor(normalization["mean"], dtype=model.dense_mean.dtype))
+                    or not torch.equal(model.dense_std.flatten().cpu(),
+                                       torch.as_tensor(normalization["std"], dtype=model.dense_std.dtype))
+                ):
+                    raise ValueError("relocated normalization values differ from the resumed checkpoint")
+                expected_signature = {**expected_signature,
+                                      **{key: current_signature.get(key) for key in moved}}
+                path_relocation = [*(path_relocation or []),
+                                   {"after_epoch": int(metadata["epoch"]), "paths": moved}]
+        schedule_override = metadata.get("schedule_override")
+        if (
+            args.override_schedule_on_resume
+            and isinstance(expected_signature, dict)
+            and expected_signature != current_signature
+        ):
+            changed = {
+                key: {"previous": expected_signature.get(key), "current": current_signature.get(key)}
+                for key in SCHEDULE_SIGNATURE_KEYS
+                if expected_signature.get(key) != current_signature.get(key)
+            }
+            others_old = {k: v for k, v in expected_signature.items() if k not in SCHEDULE_SIGNATURE_KEYS}
+            others_new = {k: v for k, v in current_signature.items() if k not in SCHEDULE_SIGNATURE_KEYS}
+            if changed and others_old == others_new:
+                expected_signature = current_signature
+                schedule_override = [*(schedule_override or []),
+                                     {"after_epoch": int(metadata["epoch"]), "changed": changed}]
+        if expected_signature != current_signature:
+            old_horizon = expected_signature.get("lr_decay_epochs") if isinstance(expected_signature, dict) else None
+            old_without_horizon = dict(expected_signature) if isinstance(expected_signature, dict) else {}
+            new_without_horizon = dict(current_signature)
+            old_without_horizon.pop("lr_decay_epochs", None)
+            new_without_horizon.pop("lr_decay_epochs", None)
+            safe_extension = (
+                args.extend_lr_decay_on_resume
+                and old_without_horizon == new_without_horizon
+                and isinstance(old_horizon, int)
+                and old_horizon < args.lr_decay_epochs
+                and int(metadata["epoch"]) <= args.warmup_epochs
+            )
+            if not safe_extension:
+                raise ValueError("resume training signature differs from current arguments")
+            lr_decay_extension = {
+                "previous_horizon": old_horizon,
+                "new_horizon": args.lr_decay_epochs,
+                "after_epoch": int(metadata["epoch"]),
+                "reason": "The completed epoch was within warmup; its learning rate is unchanged.",
+            }
         start_epoch = int(metadata["epoch"]) + 1
         best_smoothed_f1 = float(metadata.get("best_smoothed_f1", -math.inf))
         recent_f1 = list(metadata.get("recent_group_macro_f1", []))
@@ -626,6 +801,31 @@ def main() -> int:
             min_step_px=args.min_step_px,
             max_step_px=args.max_step_px,
         ).to(device)
+    if args.normalization_json is not None:
+        normalization_path = args.normalization_json.expanduser().resolve()
+        normalization = json.loads(normalization_path.read_text(encoding="utf-8"))
+        explicit_mean = torch.as_tensor(
+            normalization["mean"], dtype=model.dense_mean.dtype, device=device
+        )
+        explicit_std = torch.as_tensor(
+            normalization["std"], dtype=model.dense_std.dtype, device=device
+        )
+        if explicit_mean.numel() != 18 or explicit_std.numel() != 18:
+            raise ValueError("explicit dense normalization must contain 18 mean/std values")
+        if (
+            not torch.isfinite(explicit_mean).all()
+            or not torch.isfinite(explicit_std).all()
+            or not torch.all(explicit_std > 0)
+        ):
+            raise ValueError("explicit dense normalization contains invalid values")
+        with torch.no_grad():
+            model.dense_mean.copy_(explicit_mean.reshape_as(model.dense_mean))
+            model.dense_std.copy_(explicit_std.reshape_as(model.dense_std))
+        if (
+            not torch.equal(model.dense_mean.flatten(), explicit_mean)
+            or not torch.equal(model.dense_std.flatten(), explicit_std)
+        ):
+            raise RuntimeError("loaded dense normalization differs from the prespecified values")
     if not args.freeze_rgb and args.rgb_unfreeze_scope == "coarse":
         model.rgb_encoder.frozen = False
         for parameter in model.rgb_encoder.fine.parameters():
@@ -666,6 +866,12 @@ def main() -> int:
             **vars(args),
             "trace_params": asdict(trace_params),
             "training_signature": training_signature(args),
+            "lr_decay_extension": lr_decay_extension,
+            "path_relocation": path_relocation,
+            "schedule_override": schedule_override,
+            "loaded_dense_mean": model.dense_mean.flatten().detach().cpu().tolist(),
+            "loaded_dense_std": model.dense_std.flatten().detach().cpu().tolist(),
+            "normalization_json": str(args.normalization_json.resolve()) if args.normalization_json else None,
         },
     )
     metric_path = args.out_dir / "metrics.csv"
@@ -674,6 +880,7 @@ def main() -> int:
         "lr",
         "rollout_probability",
         "train_loss",
+        "train_optimizer_steps",
         "train_action_loss",
         "train_state_loss",
         "train_support_loss",
@@ -711,6 +918,9 @@ def main() -> int:
             scaler=scaler,
             args=args,
             rollout_p=current_rollout,
+            optimizer_steps=args.steps_per_epoch,
+            progress_path=args.out_dir / "progress.json",
+            epoch=epoch,
         )
         teacher_metrics = run_loader(
             model,
@@ -735,6 +945,7 @@ def main() -> int:
             "lr": optimizer.param_groups[0]["lr"],
             "rollout_probability": current_rollout,
             "train_loss": train_metrics["loss"],
+            "train_optimizer_steps": train_metrics["optimizer_steps"],
             "train_action_loss": train_metrics["action_loss"],
             "train_state_loss": train_metrics["state_loss"],
             "train_support_loss": train_metrics["support_loss"],
@@ -754,6 +965,9 @@ def main() -> int:
         metadata = {
             "epoch": epoch,
             "training_signature": training_signature(args),
+            "lr_decay_extension": lr_decay_extension,
+            "path_relocation": path_relocation,
+            "schedule_override": schedule_override,
             "best_smoothed_f1": max(best_smoothed_f1, smoothed),
             "recent_group_macro_f1": recent_f1,
             "rollout_metrics": rollout_metrics,

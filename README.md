@@ -206,8 +206,8 @@ current checkout can regenerate the report bit for bit.
 - Performance is lower when arms cross or overlap. For the previous tracer,
   F1 on test images with a crossing was 0.795, against 0.837 overall. The
   released tracer's crossing subset has not been measured.
-- The released tracer was trained with a pipeline that is not yet part of this
-  repository; see [Noodle Tracer training](#noodle-tracer).
+- Retraining reproduces the released recipe, not the released weights; see
+  [Noodle Tracer training](#noodle-tracer).
 - Geometric errors are reported in model-crop pixels. No physical-length
   calibration is provided by the inference pipeline.
 - Video association has not been validated as biological arm identity.
@@ -300,28 +300,96 @@ output directory.
 
 ### Noodle Tracer
 
-The released tracer was trained with the refreshed-augmentation pipeline of
-the unpublished DeepNoodleTracker development repository. That pipeline has not
-yet been ported here. Its recipe:
+#### Released recipe: refreshed training on every source family
 
-- train on all 4,062 training images, from every source family;
-- run 30 cycles. In each cycle, every image gets a fresh geometric and
-  photometric augmentation, the frozen parent Hydra (`epoch_060.pt`) is rerun
-  on the augmented image, and the tracer makes exactly 4,000 updates at batch
-  size 1;
-- normalize the dense channels with fixed statistics from non-Sleepy training
-  pixels;
-- warm the learning rate up over two cycles, then decay it from 3e-4 to 3e-5 on
-  a cosine schedule, and ramp rollout training to 30% by cycle 12;
-- select the invalid-seed threshold (0.6) on non-Sleepy validation.
+One command trains the released tracer's recipe from the downloaded dataset
+and the parent Hydra checkpoint:
 
-[`docs/published-tracer.md`](docs/published-tracer.md) records the full
-provenance, including a continuation to 64 cycles that gave no further gain.
+```bash
+python SCRIPTS/train_noodle_tracer_refreshed.py \
+  --output RUNS/noodle_tracer_fullcorpus
+```
 
-The commands below use this repository's scripts. They reproduce the
-**previous** Sleepy-only recipe: one fixed cache of the Sleepy training and
-validation rows, with augmentation applied to the cached outputs during
-training.
+The command:
+
+- prepares a study of all 4,062 training images (`--cohort all`) with the
+  frozen parent Hydra, `MODELS/hydra/epoch_060.pt`, and caches the fixed
+  34-image Sleepy validation split that is scored after every cycle;
+- runs 30 cycles. Each cycle regenerates the training data: every image gets
+  fresh flips, quarter turns, and brightness, contrast, and saturation changes,
+  applied to the pixels and the annotated arm polylines alike, and Hydra is
+  rerun on the augmented image. The tracer then makes exactly 4,000 updates at
+  batch size 1, resuming from the previous cycle;
+- normalizes the dense channels with the fixed statistics in
+  [`config/recipes/noodle_tracer_fullcorpus_normalization.json`](config/recipes/noodle_tracer_fullcorpus_normalization.json);
+- warms the learning rate up over two cycles, then decays it from 3e-4 to 3e-5
+  on a cosine schedule, and ramps rollout training to 30% by cycle 12. The RGB
+  encoder is torchvision's ImageNet-pretrained MobileNetV3-Small, kept frozen;
+  the first run downloads its weights if they are not cached.
+
+Each cycle caches about 27 GB, deleted once the cycle has trained unless
+`--keep-generations` is set. The next cycle's data is generated while the
+current cycle trains. On one RTX A6000 a cycle takes roughly 35–45 minutes, so
+the 30 cycles take about a day. Re-running the same command resumes after the
+last completed cycle; the final checkpoint is
+`RUNS/noodle_tracer_fullcorpus/training/g0030/last.pt`.
+
+Then select the invalid-seed threshold on the non-Sleepy validation split,
+cached with the endpoint-refined Hydra that inference uses, and write the
+calibrated checkpoint:
+
+```bash
+python SCRIPTS/cache_fixed_tracer_split.py \
+  --cohort non_sleepy \
+  --checkpoint MODELS/hydra/endpoint_mse_best.pt \
+  --output RUNS/noodle_tracer_fullcorpus/calibration/non_sleepy
+
+python SCRIPTS/calibrate_noodle_tracer.py \
+  --study-root RUNS/noodle_tracer_fullcorpus \
+  --validation-root RUNS/noodle_tracer_fullcorpus/calibration/non_sleepy \
+  --checkpoint RUNS/noodle_tracer_fullcorpus/training/g0030/last.pt \
+  --selection-metric f1 \
+  --invalid-seed-thresholds none,0.3,0.4,0.5,0.6 \
+  --base-state-thresholds none \
+  --lost-state-thresholds none \
+  --write-calibrated-checkpoint RUNS/noodle_tracer_fullcorpus/calibrated.pt
+```
+
+Score the calibrated checkpoint on that split, here against the released
+tracer:
+
+```bash
+python SCRIPTS/evaluate_tracer_split.py \
+  --split-root RUNS/noodle_tracer_fullcorpus/calibration/non_sleepy \
+  --checkpoint RUNS/noodle_tracer_fullcorpus/calibrated.pt \
+  --checkpoint MODELS/tracer/noodle_tracer_fullcorpus_seed20261011_calibrated.pt
+```
+
+The evaluator pools precision, recall, and F1 over images, averages F1 over
+`split_group_id` groups, and gives paired group-bootstrap F1 differences
+against the first checkpoint.
+
+The released threshold, 0.6, was selected over three training seeds
+(20261011, 20261012, and 20261013): repeat `--checkpoint` once per seed to
+select by the mean, and the first checkpoint is written. The released
+checkpoint is seed 20261011.
+
+A retrained model has similar, not identical, weights: Hydra inference and
+training use mixed precision on the GPU and are not bit-deterministic. On the
+CPU, this pipeline reproduces the original development code's generations,
+weights, and optimizer state exactly.
+
+To reproduce the matched Sleepy-only comparison, run
+`--cohort sleepy --draws-per-image 10` with a new `--output`: each cycle then
+uses ten augmented draws of each of the 403 Sleepy training images and the same
+4,000-update budget. To recompute the normalization statistics from the data,
+see [`SCRIPTS/write_tracer_normalization.py`](SCRIPTS/write_tracer_normalization.py).
+
+#### Previous recipe: fixed Sleepy cache
+
+The commands below reproduce the previous Sleepy-only tracer: one fixed cache
+of the Sleepy training and validation rows, with augmentation applied to the
+cached outputs during training.
 
 Prepare the Sleepy training and validation rows and cache the frozen parent
 Hydra outputs:
@@ -367,12 +435,22 @@ python SCRIPTS/evaluate_noodle_tracer.py \
   --out-json RUNS/noodle_tracer_sleepy18/evaluation/validation.json
 ```
 
-Held-out test access requires a lock generated from an exactly matching
-validation configuration. The previous tracer's archived result is provided in
-[`config/locked/heldout_test.json`](config/locked/heldout_test.json); its lock
-token is not a reusable token for newly trained models. The released tracer's
-analysis lock and test readout were produced by the DeepNoodleTracker pipeline
-and are recorded in `config/locked/fullcorpus_tracer_*.json`.
+#### Held-out test access
+
+Test images are cached only after the analysis is locked.
+`cache_fixed_tracer_split.py --split test` requires `--analysis-lock`, a JSON
+file that sets `test_access_locked` and records the SHA-256 of the test index
+(`test_source_index_sha256`), the Hydra checkpoint
+(`frozen_checkpoint_sha256`), and the normalization file
+(`normalization_sha256`). `evaluate_tracer_split.py --split test` takes the
+same lock and scores only checkpoints whose hashes the lock records under keys
+ending in `checkpoint_sha256`. For the previous recipe,
+`evaluate_noodle_tracer.py` writes a validation lock with `--lock` and
+`--lock-manifest`, and a test run requires `--split test`, that manifest, and
+`--test-lock-token` set to its `lock_id`. The archived records,
+[`config/locked/heldout_test.json`](config/locked/heldout_test.json) for the
+previous tracer and `config/locked/fullcorpus_tracer_*.json` for the released
+one, cannot be reused as locks for newly trained models.
 
 ### Dense geometric decoding
 

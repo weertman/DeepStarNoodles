@@ -38,7 +38,24 @@ exactly: same arms, 0 px difference.
     (`epoch_060.pt`) on the augmented image.
   - Learning-rate warmup, then cosine decay from 3e-4 to 3e-5.
   - Rollout training ramps to 30% by cycle 12.
-- **Normalization:** fixed, computed from non-Sleepy training pixels.
+- **Normalization:** fixed, computed from non-Sleepy training pixels, and shipped as
+  `config/recipes/noodle_tracer_fullcorpus_normalization.json`.
+
+## Retraining the recipe
+
+`SCRIPTS/train_noodle_tracer_refreshed.py` trains this recipe end to end, and
+`SCRIPTS/calibrate_noodle_tracer.py --selection-metric f1` selects the threshold. The
+README's Noodle Tracer training section gives the commands. The pipeline was ported from
+the DeepNoodleTracker development code. It was checked on a 12-image subset of the real
+split indexes, on CPU:
+
+- the generator's augmentation parameters, augmented images, arm polylines and Hydra
+  outputs are bit-identical to the original code's;
+- two training cycles with a resume give bit-identical weights, optimizer state and
+  metrics;
+- the one-command driver reproduces those weights.
+
+On a GPU, mixed precision makes retraining produce similar, not identical, weights.
 
 ## Why this model
 
@@ -114,9 +131,14 @@ arm, which confirms the pipeline matches.
   paths redacted.
 - Hugging Face `weertman/deepstarnoodles`: the new checkpoint and an updated model card. The
   previous tracer file stays.
-- README: the results, limitations, recipe and training sections are updated. The
-  training section notes that the released recipe has not yet been ported to this
-  repository.
+- README: the results, limitations, recipe and training sections are updated.
+- Training code: refreshed generation (`generate_refreshed_tracer_cache.py`), fixed
+  validation and locked test caches (`cache_fixed_tracer_split.py`), cohort selection in
+  `cache_frozen_outputs.py`, the one-command driver (`train_noodle_tracer_refreshed.py`), a
+  fixed update budget, a fixed normalization, separate validation and guarded resume in
+  `train_noodle_tracer.py`, and seed-averaged F1 calibration in
+  `calibrate_noodle_tracer.py`. The normalization file is registered in
+  `config/artifacts.json` as `recipe-config`.
 
 Not changed: the manuscript workspace under `paper/`. Its arm-recovery numbers (0.8366 on
 63 images, 0.8219 on 502 images) still describe the previous tracer.

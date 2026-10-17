@@ -67,6 +67,13 @@
       "note": "Default 60-second, 64-D progress temporal VAE. The current released Hydra is supported for experimentation but this checkpoint has not been scientifically revalidated against its output distribution."
     },
     {
+      "id": "fullcorpus-tracer-normalization",
+      "role": "recipe-config",
+      "path": "config/recipes/noodle_tracer_fullcorpus_normalization.json",
+      "sha256": "3a85a3ae78dbb23e8bc2fe46da5cb7138d46ed69f9fabb2a8209213faa0d15a8",
+      "note": "Fixed dense-channel normalization of the released tracer; default of SCRIPTS/train_noodle_tracer_refreshed.py."
+    },
+    {
       "id": "fullcorpus-tracer-analysis-lock",
       "role": "recipe-lock",
       "path": "config/locked/fullcorpus_tracer_analysis_lock.json",

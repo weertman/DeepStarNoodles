@@ -4,7 +4,9 @@
 """Prepare and cache the frozen 18-channel Noodle Tracer experiment.
 
 This command intentionally separates immutable experiment preparation from
-training and held-out evaluation.
+training and held-out evaluation. ``--cohort`` selects the source families:
+``sleepy`` (the previous Sleepy-only recipe), ``non_sleepy``, or ``all``
+(every training image, as used by the released tracer).
 """
 from __future__ import annotations
 
@@ -33,9 +35,10 @@ from deepstarnoodles.noodle_tracer_cache import (
     FROZEN_CACHE_SCHEMA,
     cache_record_identity,
     prepared_arms_from_row,
+    TRACER_COHORTS,
+    cohort_rows,
     sha256_file,
-    sleepy_rows,
-    validate_sleepy_split_contract,
+    validate_cohort_splits,
     write_cache_record,
 )
 from deepstarnoodles.paths import resolve_repo_path, to_repo_relative
@@ -45,7 +48,6 @@ from deepstarnoodles.train import collate
 DEFAULT_SPLITS = REPO / "DATA/deepstarnoodles/splits"
 DEFAULT_CHECKPOINT = REPO / "MODELS/hydra/epoch_060.pt"
 DEFAULT_OUTPUT = REPO / "RUNS/noodle_tracer_sleepy18"
-EXPECTED_COUNTS = {"train": 403, "validation": 34, "test": 63}
 CACHE_SPLITS = ("train", "validation", "test")
 CHANNEL_NAMES = (
     "arm_support_logit",
@@ -105,33 +107,53 @@ def write_index(path: Path, rows: Sequence[dict[str, str]]) -> None:
     os.replace(temporary, path)
 
 
+def index_name(cohort: str, split: str) -> str:
+    return f"{cohort}_{split}.csv"
+
+
 def prepare_contract(
     *,
     output: Path,
     checkpoint: Path,
     split_dir: Path,
+    cohort: str = "sleepy",
 ) -> dict[str, Any]:
     source_paths = {
         "train": split_dir / "train_index.csv",
         "validation": split_dir / "validation_index.csv",
         "test": split_dir / "test_index.csv",
     }
-    rows = {name: sleepy_rows(path) for name, path in source_paths.items()}
-    validate_sleepy_split_contract(rows["train"], rows["validation"], rows["test"])
+    rows = {name: cohort_rows(path, cohort) for name, path in source_paths.items()}
+    validate_cohort_splits(rows, cohort)
+    validate_cohort_splits(
+        {name: cohort_rows(path, "all") for name, path in source_paths.items()}, "all"
+    )
     index_dir = output / "indexes"
     for name, split_rows in rows.items():
-        write_index(index_dir / f"sleepy_{name}.csv", split_rows)
+        write_index(index_dir / index_name(cohort, name), split_rows)
     checkpoint_payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     embedding_dim = int(checkpoint_payload.get("config", {}).get("embedding_dim", -1))
     if embedding_dim != 8:
         raise ValueError(f"expected frozen 8-D embedding checkpoint, got {embedding_dim}")
     source_hashes = {name: sha256_file(path) for name, path in source_paths.items()}
     materialized_hashes = {
-        name: sha256_file(index_dir / f"sleepy_{name}.csv") for name in rows
+        name: sha256_file(index_dir / index_name(cohort, name)) for name in rows
+    }
+    cohort_counts = {
+        name: {
+            "images": len(split_rows),
+            "annotated_arm_polylines": sum(len(prepared_arms_from_row(row)) for row in split_rows),
+            "source_families": {
+                family: sum(row.get("source_family") == family for row in split_rows)
+                for family in sorted({row.get("source_family", "") for row in split_rows})
+            },
+        }
+        for name, split_rows in rows.items()
     }
     contract = {
         "schema_version": 1,
-        "experiment": "recurrent_local_tracer_sleepy18",
+        "experiment": f"recurrent_local_tracer_{cohort}18",
+        "cohort": cohort,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "frozen_checkpoint": str(checkpoint.resolve()),
         "frozen_checkpoint_sha256": sha256_file(checkpoint),
@@ -153,9 +175,10 @@ def prepare_contract(
             name: {
                 "source": str(source_paths[name].resolve()),
                 "source_sha256": source_hashes[name],
-                "materialized": str((index_dir / f"sleepy_{name}.csv").resolve()),
+                "materialized": str((index_dir / index_name(cohort, name)).resolve()),
                 "materialized_sha256": materialized_hashes[name],
                 "records": len(rows[name]),
+                **cohort_counts[name],
             }
             for name in rows
         },
@@ -209,7 +232,7 @@ def validate_cache_contract(
         split_contract = contract.get("splits", {}).get(split)
         if not isinstance(split_contract, dict):
             raise ValueError(f"prepared contract has no {split} split")
-        index_path = output / "indexes" / f"sleepy_{split}.csv"
+        index_path = output / "indexes" / index_name(contract.get("cohort", "sleepy"), split)
         if not index_path.is_file():
             raise FileNotFoundError(index_path)
         if sha256_file(index_path) != split_contract.get("materialized_sha256"):
@@ -287,8 +310,9 @@ def cache_split(
     batch_size: int,
     num_workers: int,
     force: bool,
+    cohort: str = "sleepy",
 ) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray, int]:
-    index_path = output / "indexes" / f"sleepy_{split}.csv"
+    index_path = output / "indexes" / index_name(cohort, split)
     dataset = HydraDenseDataset(index_path, image_size=(512, 512), augment=False)
     loader = DataLoader(
         dataset,
@@ -413,6 +437,7 @@ def cache_all(args: argparse.Namespace, contract: dict[str, Any]) -> None:
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             force=args.force,
+            cohort=contract.get("cohort", "sleepy"),
         )
         pending_manifests[split] = result
         if split == "train":
@@ -449,6 +474,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--split-dir", type=Path, default=DEFAULT_SPLITS)
+    parser.add_argument(
+        "--cohort", choices=TRACER_COHORTS, default="sleepy",
+        help="source families taken from the split indexes (default: sleepy)",
+    )
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -476,11 +505,17 @@ def main() -> int:
             output=args.output,
             checkpoint=args.checkpoint,
             split_dir=args.split_dir,
+            cohort=args.cohort,
         )
     else:
         contract = json.loads(contract_path.read_text(encoding="utf-8"))
         if sha256_file(args.checkpoint) != contract["frozen_checkpoint_sha256"]:
             raise ValueError("frozen checkpoint hash differs from prepared contract")
+        if contract.get("cohort", "sleepy") != args.cohort:
+            raise ValueError(
+                f"prepared contract is for cohort {contract.get('cohort', 'sleepy')!r}; "
+                f"pass --cohort {contract.get('cohort', 'sleepy')}"
+            )
     if args.stage in {"cache", "all"}:
         cache_all(args, contract)
     print(
