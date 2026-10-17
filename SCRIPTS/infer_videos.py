@@ -107,6 +107,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shape-gate", type=float, default=120.0)
     parser.add_argument("--embed-weight", type=float, default=2.0)
     parser.add_argument("--max-age", type=int, default=16)
+    parser.add_argument(
+        "--max-match-cost",
+        type=float,
+        default=90.0,
+        help="largest association cost accepted as a match; 0 disables the cap (pre-2026-10-13 behaviour)",
+    )
     return parser.parse_args()
 
 
@@ -190,6 +196,7 @@ def main() -> int:
                         shape_gate=args.shape_gate,
                         embed_weight=args.embed_weight,
                         max_age=args.max_age,
+                        max_match_cost=args.max_match_cost or None,
                     )
                 ),
                 star_trackers=(
@@ -197,6 +204,7 @@ def main() -> int:
                         shape_gate=args.shape_gate,
                         embed_weight=args.embed_weight,
                         max_age=args.max_age,
+                        max_match_cost=args.max_match_cost or None,
                     )
                     if args.multi_star
                     else None

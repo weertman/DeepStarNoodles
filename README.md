@@ -522,9 +522,13 @@ results reported above come from their own locked evaluation.
 ## Advanced video inference
 
 Single-video inference uses a dense/tracer batch size of one for minimum live
-latency. The default arm-association parameters are a shape gate of 120,
-embedding weight of 2.0, and maximum age of 16 frames; each is configurable
-through `infer_video.py`.
+latency. The default arm-association parameters are `--shape-gate 120`,
+`--embed-weight 2.0`, `--max-age 16` and `--max-match-cost 90`. Age counts
+unmatched tracker updates; frames without decoded arms do not advance the arm
+tracker. A pairing costing more than the match-cost cap starts a new ID instead
+of taking over another arm's track; `--max-match-cost 0` restores the earlier
+behaviour (no cap), which produced more identity switches. These parameters
+are configurable through both video commands.
 
 ### Multiple input streams
 
