@@ -4,6 +4,7 @@
  "license": "CC-BY-4.0",
  "fps": 2.0,
  "model_size": 512,
+ "source_format": "flipping",
  "n_frames": 181,
  "n_arms": 1226,
  "n_points": 34144,

@@ -22,7 +22,7 @@ import numpy as np
 
 from . import _reference as R
 from . import geometry as G
-from .container import PolylineContainer
+from .container import ContainerError, PolylineContainer
 
 
 @dataclass(frozen=True)
@@ -102,8 +102,10 @@ def tracker_inputs(c: PolylineContainer, origin_dtype: str = 'float64', k: int =
     runtime and Fig 6 stats path; on released data both give bit-identical inputs.
     """
     c.require('body_origin_model', 'identity')
-    if origin_dtype not in ('float64', 'float32'):
-        raise ValueError("origin_dtype must be 'float64' or 'float32'")
+    origin_dtype = resolve_origin_dtype(c, origin_dtype)
+    if c.n_arms and not np.all(np.isfinite(c.identity)):
+        raise ContainerError('identity has non-finite entries (arms without an identity embedding); '
+                             'the tracker needs a finite (A,8) identity for every arm')
     origin = c.body_origin_model[c.arm_frame()].astype(origin_dtype)
     sampled, lengths = G.resample_tip(c.points, c.arm_point_offsets, k, arm_origin=origin)
     return sampled, lengths.astype(np.float32), c.identity
@@ -182,15 +184,40 @@ def step_costs(c: PolylineContainer, frame: int, config: TrackerConfig = RELEASE
 
 
 # ------------------------------------------------------------------------------------ T4.5 diagnostics
-def sequence_index(c: PolylineContainer, by: str = 'frame_index') -> np.ndarray:
+def resolve_index_by(c: PolylineContainer, by: str = 'auto') -> str:
+    """The Fig 6D sequence index for ``c``: 'time' for Sleepy containers (``meta['source_format']``),
+    'frame_index' otherwise. ``'auto'`` refuses a non-Sleepy container whose ``frame_index``
+    :func:`~noodle_polylines.container.concat` renumbered: pass ``by=`` or ``index=`` explicitly."""
+    if by != 'auto':
+        if by not in ('frame_index', 'time'):
+            raise ValueError("by must be 'auto', 'frame_index' or 'time'")
+        return by
+    if c.meta.get('source_format') == 'sleepy':
+        return 'time'
+    if c.meta.get('source_frame_index_renumbered'):
+        raise ContainerError("frame_index was renumbered by concat; pass by='time' (or index=) to the diagnostics")
+    return 'frame_index'
+
+
+def resolve_origin_dtype(c: PolylineContainer, origin_dtype: str = 'auto') -> str:
+    """Body-origin subtraction dtype: 'float32' for flipping containers (Fig 6C/6D subtract a float32
+    origin, prepare_figure_06_stats.py:162-170), 'float64' otherwise (Sleepy, figure scripts)."""
+    if origin_dtype == 'auto':
+        return 'float32' if c.meta.get('source_format') == 'flipping' else 'float64'
+    if origin_dtype not in ('float64', 'float32'):
+        raise ValueError("origin_dtype must be 'auto', 'float64' or 'float32'")
+    return origin_dtype
+
+
+def sequence_index(c: PolylineContainer, by: str = 'auto') -> np.ndarray:
     """Per-frame integer index used by the diagnostics: ``frame_index`` (flipping) or
-    ``round(time_s - time_s[0])`` (Sleepy sequences, prepare_figure_06_stats.py:147)."""
+    ``round(time_s - time_s[0])`` (Sleepy sequences, prepare_figure_06_stats.py:147). ``'auto'``: see
+    :func:`resolve_index_by`."""
+    by = resolve_index_by(c, by)
     if by == 'frame_index':
         return c.frame_index
-    if by == 'time':
-        t = c.times()
-        return np.array([int(round(x - t[0])) for x in t], np.int64)
-    raise ValueError("by must be 'frame_index' or 'time'")
+    t = c.times()
+    return np.array([int(round(x - t[0])) for x in t], np.int64)
 
 
 def _labels_per_frame(ids: np.ndarray, fo: np.ndarray, pos: np.ndarray) -> list[list[int]]:
@@ -199,12 +226,16 @@ def _labels_per_frame(ids: np.ndarray, fo: np.ndarray, pos: np.ndarray) -> list[
 
 def diagnostics(c: PolylineContainer, frames: np.ndarray | None = None, states=None, fps: float | None = None,
                 index: np.ndarray | None = None, variants: dict | None = None, strides=STRIDES,
-                origin_dtype: str = 'float64') -> dict:
+                origin_dtype: str = 'auto', by: str = 'auto') -> dict:
     """T4.5 Fig 6D tracker self-consistency on one sequence (prepare_figure_06_stats.py:238-315).
 
     ``frames``: positions forming the sequence (default: star frames); ``states`` (F,) labels of the later
-    frame used to split counts (None entries are skipped); ``index`` (F,) integer frame index (default
-    ``frame_index``). For each tracker variant: forward and reverse runs, ``by_state`` counters
+    frame used to split counts (None entries are skipped); ``index`` (F,) integer frame index, else ``by``
+    ('frame_index' | 'time' | 'auto' = time for Sleepy, frame_index otherwise; :func:`resolve_index_by`).
+    Sleepy sequences need the time index, or gaps of 2-16 s count as consecutive frames. ``origin_dtype``
+    'auto' is float32 for flipping, float64 otherwise (:func:`resolve_origin_dtype`); the resolved
+    choices are returned as ``index_by`` and ``origin_dtype``. An empty sequence gives zero counters.
+    For each tracker variant: forward and reverse runs, ``by_state`` counters
     (continuation, forward-reverse link agreement, jumps > 30 deg with both tip radii >= 25 crop px,
     births), ``n_ids`` and arm-weighted ``arm_lifetime_s``; for 'fused' also stride precision
     (g = 2, 4, 8, 16). Returns the same structure as ``analyse`` plus ``runs`` (labels per pass, (A,)).
@@ -212,7 +243,16 @@ def diagnostics(c: PolylineContainer, frames: np.ndarray | None = None, states=N
     variants = VARIANTS if variants is None else variants
     pos = np.flatnonzero(c.star_mask()) if frames is None else np.asarray(frames, np.int64)
     fps = c.fps if fps is None else fps
-    idx_all = c.frame_index if index is None else np.asarray(index)
+    if fps is None or not fps > 0:
+        raise ContainerError('diagnostics needs a positive fps (meta["fps"] or fps=)')
+    origin_dtype = resolve_origin_dtype(c, origin_dtype)
+    if index is None:
+        by = resolve_index_by(c, by)
+        idx_all = sequence_index(c, by)
+    else:
+        by, idx_all = 'index', np.asarray(index)
+    if len(pos) == 0:
+        return _empty_diagnostics(variants, strides, by, origin_dtype)
     fo = c.frame_arm_offsets
     angle, radius = G.tip_polar(c.points, c.arm_point_offsets, fo, c.body_origin_model, origin_dtype=origin_dtype)
     polar = [(angle[fo[f]:fo[f + 1]], radius[fo[f]:fo[f + 1]]) for f in pos]
@@ -222,7 +262,8 @@ def diagnostics(c: PolylineContainer, frames: np.ndarray | None = None, states=N
     idx = np.array([fr['index'] for fr in seq_frames])
     res: dict = {'n_frames': len(pos), 'n_arms': int(sum(len(fr['arms']) for fr in seq_frames)),
                  'median_arms': float(np.median([len(fr['arms']) for fr in seq_frames])),
-                 'duration_s': float((idx[-1] - idx[0] + 1) / fps), 'runs': {}}
+                 'duration_s': float((idx[-1] - idx[0] + 1) / fps), 'runs': {},
+                 'index_by': by, 'origin_dtype': origin_dtype}
     for variant, config in variants.items():
         cfg = config if isinstance(config, TrackerConfig) else TrackerConfig.from_dict(config)
         fwd_ids = relink(c, cfg, frames=pos, inputs=inputs, step_index=idx_all, require_finite_origin=False)
@@ -260,11 +301,27 @@ def diagnostics(c: PolylineContainer, frames: np.ndarray | None = None, states=N
     return res
 
 
+def _empty_diagnostics(variants: dict, strides, by: str, origin_dtype: str) -> dict:
+    """Diagnostics of a sequence without frames: zero counters, no runs."""
+    res: dict = {'n_frames': 0, 'n_arms': 0, 'median_arms': float('nan'), 'duration_s': 0.0, 'runs': {},
+                 'index_by': by, 'origin_dtype': origin_dtype}
+    for variant in variants:
+        res[variant] = {'by_state': {'all': R.counters()}, 'n_ids': 0, 'arm_lifetime_s': np.zeros(0, np.float32)}
+        if variant == 'fused' and strides:
+            res['strides'] = {g: {'agree': 0, 'sub_links': 0, 'full_links': 0} for g in strides}
+    return res
+
+
 def rates(counts: list[dict]) -> dict:
     """Pooled rates from ``by_state`` counters (continuation, agreement, jumps per 1,000 links, new-ID rate)."""
     return R.rates(counts)
 
 
 def pooled(results: list[dict], variant: str, states: tuple[str, ...]) -> dict:
-    """Pool :func:`diagnostics` results of several sequences (prepare_figure_06_stats.py:330-341)."""
-    return R.pooled(results, variant, states)
+    """Pool :func:`diagnostics` results of several sequences (prepare_figure_06_stats.py:330-341).
+
+    Results of empty sequences (``n_frames == 0``) carry no arms or links and are skipped."""
+    kept = [r for r in results if r['n_frames'] > 0]
+    if not kept:
+        raise ValueError('pooled: no non-empty sequences')
+    return R.pooled(kept, variant, states)

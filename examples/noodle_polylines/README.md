@@ -15,7 +15,8 @@ embeddings and the stored `track_id`. There are no image pixels.
 
 The file is the canonical `noodle_polylines` container. It loads with
 `allow_pickle=False`. The JSON file gives the frame rate, the tracer and tracker settings,
-code tables, and the two righting bouts on the 1-s grid:
+code tables, and the two righting bouts on the 1-s grid. Load both with
+`PolylineContainer.load('data/flip_example_01.npz', sidecar=True)`:
 
 | Bout | Flip | Upside-down | Right-side-up | Analysis window |
 |---|---|---|---|---|

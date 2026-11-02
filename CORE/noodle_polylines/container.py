@@ -11,7 +11,8 @@ Layout (A arms, F frames, P points)::
 
 Optional per-frame fields: ``time_s`` (F,) f64, ``crop`` (F,3) f64 (left, top, side in source px),
 ``body_origin_model`` (F,2) f64, ``body_origin_code`` (F,) int8, ``support_area_model_px`` (F,) int32,
-``support_centroid_model`` (F,2) f64, ``has_star`` (F,) bool. Optional per-arm fields: ``identity``
+``support_centroid_model`` (F,2) f64, ``has_star`` (F,) bool, ``source_frame_index`` (F,) i64 (the
+original video frame when :func:`concat` renumbered ``frame_index``). Optional per-arm fields: ``identity``
 (A,8) f32, ``track_id`` (A,) int64 (-1 = absent), and pass-through ``tip_score``, ``base_score``,
 ``state_confidence`` (f32), ``steps`` (int16), ``stop_reason`` (int8). ``meta`` is a JSON-able dict
 (``fps``, ``model_size``, ``trace_contract``, ``tracker_config``, ...), stored in the npz as a JSON
@@ -33,7 +34,7 @@ BODY_ORIGIN_CODES = {0: 'mouth peak', 1: 'support > 0.3 centroid', 2: 'crop cent
 FRAME_FIELDS = {'frame_index': (np.int64, ()), 'time_s': (np.float64, ()), 'crop': (np.float64, (3,)),
                 'body_origin_model': (np.float64, (2,)), 'body_origin_code': (np.int8, ()),
                 'support_area_model_px': (np.int32, ()), 'support_centroid_model': (np.float64, (2,)),
-                'has_star': (np.bool_, ())}
+                'has_star': (np.bool_, ()), 'source_frame_index': (np.int64, ())}
 ARM_FIELDS = {'identity': (np.float32, (8,)), 'track_id': (np.int64, ()), 'tip_score': (np.float32, ()),
               'base_score': (np.float32, ()), 'state_confidence': (np.float32, ()), 'steps': (np.int16, ()),
               'stop_reason': (np.int8, ())}
@@ -56,6 +57,7 @@ class PolylineContainer:
     support_area_model_px: np.ndarray | None = None
     support_centroid_model: np.ndarray | None = None
     has_star: np.ndarray | None = None
+    source_frame_index: np.ndarray | None = None
     identity: np.ndarray | None = None
     track_id: np.ndarray | None = None
     tip_score: np.ndarray | None = None
@@ -184,17 +186,21 @@ class PolylineContainer:
 
     @classmethod
     def load(cls, path: str | Path, meta: dict | None = None, validate: bool = True,
-             strict: bool = True) -> 'PolylineContainer':
-        """Read a container ``.npz`` with ``allow_pickle=False``. A sibling ``<stem>.json`` is merged into meta.
+             strict: bool = True, sidecar: bool | str | Path = False) -> 'PolylineContainer':
+        """Read a container ``.npz`` with ``allow_pickle=False``.
 
+        ``sidecar``: merge a JSON metadata file into meta (the npz's own ``meta_json`` and ``meta=`` win).
+        ``True`` reads the sibling ``<stem>.json`` (e.g. the micro example's), a path reads that file. It is
+        never read implicitly: a sibling JSON may be an unrelated payload (an ``infer_video`` output next to
+        its converted container). The sidecar must be a JSON object without a ``frames`` key.
         Unknown arrays raise unless ``strict=False`` (then they are ignored)."""
         path = Path(path)
         with np.load(path, allow_pickle=False) as z:
             arrays = {k: z[k] for k in z.files}
         m = json.loads(str(arrays.pop('meta_json'))) if 'meta_json' in arrays else {}
-        side = path.with_suffix('.json')
-        if side.exists():
-            m = {**json.loads(side.read_text()), **m}
+        if sidecar is not False and sidecar is not None:
+            side = path.with_suffix('.json') if sidecar is True else Path(sidecar)
+            m = {**read_sidecar(side), **m}
         if meta:
             m.update(meta)
         known = {f.name for f in fields(cls)}
@@ -239,6 +245,17 @@ class PolylineContainer:
         return replace(self, **kw)
 
 
+def read_sidecar(path: str | Path) -> dict:
+    """A container's JSON metadata file: a JSON object that is not an inference payload."""
+    path = Path(path)
+    m = json.loads(path.read_text())
+    if not isinstance(m, dict):
+        raise ContainerError(f'{path.name}: metadata sidecar must be a JSON object, got {type(m).__name__}')
+    if 'frames' in m:
+        raise ContainerError(f'{path.name}: looks like an inference payload (has "frames"), not container metadata')
+    return m
+
+
 def _offsets(counts: np.ndarray) -> np.ndarray:
     out = np.zeros(len(counts) + 1, np.int64)
     np.cumsum(counts, out=out[1:])
@@ -256,19 +273,31 @@ def _ranges(starts: np.ndarray, counts: np.ndarray) -> np.ndarray:
     return rep + np.arange(total, dtype=np.int64)
 
 
+TRACK_ID_CONCAT = ('auto', 'keep', 'offset', 'drop')
+
+
 def concat(containers: Iterable[PolylineContainer], sort_by_time: bool = True,
-           dedupe_time_decimals: int | None = None) -> PolylineContainer:
+           dedupe_time_decimals: int | None = None, track_ids: str = 'auto') -> PolylineContainer:
     """Concatenate containers of one animal (e.g. the Sleepy segments of an individual).
 
     With ``sort_by_time`` the frames are put in a stable time order (``list.sort`` semantics). With
     ``dedupe_time_decimals`` frames whose rounded times collide keep the LAST one seen, as the Fig 6
     Sleepy sequences do (``round(timestamp, 1)`` keys in a dict). ``frame_index`` must stay strictly
-    increasing; when the parts come from different videos it is renumbered 0..F-1 and the original
-    values are kept in ``meta['source_frame_index_renumbered']``.
+    increasing; when it would not (parts from different videos) it is renumbered 0..F-1,
+    ``meta['source_frame_index_renumbered']`` is set and the original values are kept in the
+    ``source_frame_index`` field.
+
+    ``track_ids`` (stored ``track_id`` of the parts): 'keep' verbatim (pieces of ONE tracker run),
+    'offset' shifts each part's IDs past the previous parts' so independently tracked parts never share
+    an ID (-1 stays -1), 'drop' removes ``track_id``. 'auto' keeps them unless ``frame_index`` is
+    renumbered (then the parts are separate recordings and are offset). The choice is recorded in
+    ``meta['track_id_concat']``. Parts tracked separately within one video need 'offset' explicitly.
     """
     parts = [c for c in containers]
     if not parts:
         raise ContainerError('nothing to concatenate')
+    if track_ids not in TRACK_ID_CONCAT:
+        raise ValueError(f'track_ids must be one of {TRACK_ID_CONCAT}')
     names = [n for n in (*FRAME_FIELDS, *ARM_FIELDS) if all(getattr(c, n) is not None for c in parts)]
     pts = np.concatenate([c.points for c in parts]) if parts else np.zeros((0, 2), np.float32)
     ppa = np.concatenate([c.points_per_arm() for c in parts])
@@ -278,8 +307,14 @@ def concat(containers: Iterable[PolylineContainer], sort_by_time: bool = True,
     for n in names:
         kw[n] = np.concatenate([getattr(c, n) for c in parts])
     kw.setdefault('frame_index', np.concatenate([c.frame_index for c in parts]))
+    had_source = any(c.source_frame_index is not None for c in parts)
+    kw['source_frame_index'] = np.concatenate([c.frame_index if c.source_frame_index is None
+                                               else c.source_frame_index for c in parts])
+    tracked = all(c.track_id is not None for c in parts)
+    kw['track_id'] = None       # set below
     meta = dict(parts[0].meta)
     out = PolylineContainer(**kw, meta=meta)
+    order = None
     if sort_by_time or dedupe_time_decimals is not None:
         t = out.times()
         if dedupe_time_decimals is not None:
@@ -290,11 +325,37 @@ def concat(containers: Iterable[PolylineContainer], sort_by_time: bool = True,
             order = order[last]
         else:
             order = np.argsort(t, kind='stable')
+    fidx = out.frame_index if order is None else out.frame_index[order]
+    renumber = len(fidx) > 1 and bool(np.any(np.diff(fidx) <= 0))
+    if tracked:
+        mode = track_ids if track_ids != 'auto' else ('offset' if renumber else 'keep')
+        out.track_id = _concat_track_ids(parts, mode)
+        out.meta['track_id_concat'] = mode
+    if order is not None:
         out = _reorder(out, order)
-    if out.n_frames > 1 and np.any(np.diff(out.frame_index) <= 0):
+    if renumber:
         out.meta['source_frame_index_renumbered'] = True
         out.frame_index = np.arange(out.n_frames, dtype=np.int64)
+    elif not had_source:
+        out.source_frame_index = None
     return out
+
+
+def _concat_track_ids(parts: list[PolylineContainer], mode: str) -> np.ndarray | None:
+    """Per-arm track IDs of concatenated parts (every part has ``track_id``)."""
+    if mode == 'drop':
+        return None
+    out, base = [], 0
+    for c in parts:
+        t = np.asarray(c.track_id, np.int64)
+        if mode == 'offset':
+            valid = t >= 0
+            out.append(np.where(valid, t + base, -1))
+            if valid.any():
+                base += int(t[valid].max()) + 1
+        else:
+            out.append(t)
+    return np.concatenate(out) if out else np.zeros(0, np.int64)
 
 
 def _reorder(c: PolylineContainer, order: np.ndarray) -> PolylineContainer:

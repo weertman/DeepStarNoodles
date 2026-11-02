@@ -33,10 +33,14 @@ class Preset:
     curvature_reducer: str           # 'median' (Fig 4) | 'nanmedian' (Fig 5)
     isotropy_fallback: float         # T2.6 window value without frames: NaN (5D strata) | 0.0 (5A example)
     tip_origin_dtype: str            # T1.3 tip angle: 'float32' (flipping stats) | 'float64'
-    tip_angle_dtype: str             # 'float64' | 'float32' (Fig 6B/C copies)
+    tip_angle_dtype: str             # 'float64' | 'float32' (Fig 6C kymograph, prepare_figure_06_flip.py:117)
     tracker_origin_dtype: str        # T4 inputs: 'float64' (figure scripts) | 'float32' (runtime, stats)
     track_frames: str                # frames fed to a re-link: 'all' (frames with arms) | 'star'
     log10_floor: float | None = None # also return log10(max(deformation, floor)) (Fig 4D)
+    # Fig 4D per-bout deformation (prepare_figure_04_tree_features.py:121-157): with ``windows=`` each bout
+    # (start - context, stop + context) is run on its own, shapes only from star frames with
+    # lo - lookback <= t <= hi. (context_s, lookback_s), or None for a whole-sequence deformation.
+    deformation_window: tuple[float, float] | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -45,17 +49,22 @@ class Preset:
 FIG4B = Preset('fig4b', '4B', 'per_frame', 'fig4e', 'prev_frame_reset', 'fig4', 'zero', 'median', math.nan,
                'float64', 'float64', 'float64', 'all')
 FIG4D = Preset('fig4d', '4D', 'outside_windows', 'fig4d', 'prev_frame_reset', 'fig4', 'zero', 'median', math.nan,
-               'float64', 'float64', 'float64', 'all', log10_floor=1e-3)
+               'float64', 'float64', 'float64', 'all', log10_floor=1e-3,
+               deformation_window=(SC.OUTSIDE_CONTEXT_S, 1.0))
 FIG4E = Preset('fig4e', '4E', 'pre_onset', 'fig4e', 'prev_frame_reset', 'fig4', 'zero', 'median', math.nan,
                'float64', 'float64', 'float64', 'all')
 FIG5 = Preset('fig5', '5B-D', 'baseline', 'fig5', 'last_arm_frame', 'fig5', 'nan', 'nanmedian', math.nan,
               'float64', 'float64', 'float64', 'all')
 FIG5_EXAMPLE = replace(FIG5, name='fig5_example', panels='5A-B', isotropy_fallback=0.0)
-FIG6_FLIPPING = Preset('fig6_flipping', '6A,6C,6D', None, 'fig5', 'last_arm_frame', 'fig5', 'nan', 'nanmedian',
+# Flipping Fig 6: 6A (step costs) and 6D (stats.tip_polar: float32 origin, float64 angles) share one
+# preset; the 6C kymograph (prepare_figure_06_flip.py:117-118) takes angles of float32 tips with no
+# float cast, so its angles are float32. Sleepy 6B casts polylines to float64 (06_example:98).
+FIG6_FLIPPING = Preset('fig6_flipping', '6A,6D', None, 'fig5', 'last_arm_frame', 'fig5', 'nan', 'nanmedian',
                        math.nan, 'float32', 'float64', 'float32', 'star')
+FIG6C = replace(FIG6_FLIPPING, name='fig6c', panels='6C', tip_angle_dtype='float32')
 FIG6_SLEEPY = replace(FIG6_FLIPPING, name='fig6_sleepy', panels='6B,6D', tip_origin_dtype='float64',
                       tracker_origin_dtype='float64', track_frames='all')
-PRESETS = {p.name: p for p in (FIG4B, FIG4D, FIG4E, FIG5, FIG5_EXAMPLE, FIG6_FLIPPING, FIG6_SLEEPY)}
+PRESETS = {p.name: p for p in (FIG4B, FIG4D, FIG4E, FIG5, FIG5_EXAMPLE, FIG6_FLIPPING, FIG6C, FIG6_SLEEPY)}
 
 
 def get(preset: str | Preset) -> Preset:
@@ -78,6 +87,28 @@ def resolve_r0(c: PolylineContainer, preset: Preset, r0=None, bout=None, windows
     return SC.r0(c, preset.r0_policy, bout=bout, windows=windows, onset_s=onset_s)
 
 
+def _window_deformation(c: PolylineContainer, r0, ids: np.ndarray, p: Preset, windows, base: np.ndarray
+                        ) -> tuple[np.ndarray, np.ndarray]:
+    """Fig 4D deformation, one run per bout window: (F,) first window containing each frame (NaN outside
+    every window) and (W, F) per window (NaN outside that window)."""
+    context, lookback = p.deformation_window
+    t = c.times()
+    w = np.asarray(list(windows), np.float64).reshape(-1, 2)
+    per = np.full((len(w), c.n_frames), np.nan)
+    first = np.full(c.n_frames, np.nan)
+    taken = np.zeros(c.n_frames, bool)
+    for k, (start, stop) in enumerate(w):
+        lo, hi = start - context, stop + context
+        d = KI.arm_deformation(c, r0, ids, lag=p.deformation_lag, shape_order=p.shape_order,
+                               shape_mask=(t >= lo - lookback) & (t <= hi), base=base)
+        inside = (t >= lo) & (t <= hi)
+        per[k, inside] = d[inside]
+        new = inside & ~taken
+        first[new] = d[new]
+        taken |= inside
+    return first, per
+
+
 def compute_all(c: PolylineContainer, preset: str | Preset = 'fig5', *, r0=None, bout=None, windows=None,
                 onset_s=None, track: str = 'auto', config: TR.TrackerConfig = TR.RELEASED,
                 shapes: bool = False, isotropy_window=(-300.0, -60.0)) -> dict[str, np.ndarray]:
@@ -88,6 +119,12 @@ def compute_all(c: PolylineContainer, preset: str | Preset = 'fig5', *, r0=None,
     ``track``: 'auto' (stored IDs when present, else re-link), 'stored' or 'relink'. A container whose
     R0 policy cannot be resolved (e.g. a baseline with < 30 frames) returns only the untracked geometry
     and ``dropped=True``.
+
+    Fig 4D (``deformation_window`` set and ``windows=`` given): the deformation is run once per bout
+    window ``[start - 2, stop + 2]`` with shapes only from ``[start - 3, stop + 2]``, as the panel does.
+    ``arm_deformation_window`` / ``log_deformation_window`` (W, F) hold each bout's values (NaN outside
+    its window); ``arm_deformation`` / ``log_deformation`` (F,) take the first window containing the
+    frame and are NaN outside every window.
     """
     p = get(preset)
     c.require('crop')
@@ -139,7 +176,13 @@ def compute_all(c: PolylineContainer, preset: str | Preset = 'fig5', *, r0=None,
     out['arm_curvature'] = FR.arm_curvature(c, r.r0, p.variant, curvature=kappa, reducer=p.curvature_reducer)
     if ids is not None:
         base = G.resample_base(pts, ao) if 'resample_base' not in out else out['resample_base']
-        d = KI.arm_deformation(c, r.r0, ids, lag=p.deformation_lag, shape_order=p.shape_order, base=base)
+        if p.deformation_window is not None and windows is not None:
+            d, d_win = _window_deformation(c, r.r0, ids, p, windows, base)
+            out['arm_deformation_window'] = d_win
+            if p.log10_floor is not None:
+                out['log_deformation_window'] = np.log10(np.maximum(d_win, p.log10_floor))
+        else:
+            d = KI.arm_deformation(c, r.r0, ids, lag=p.deformation_lag, shape_order=p.shape_order, base=base)
         out['arm_deformation'] = d
         if p.log10_floor is not None:
             out['log_deformation'] = np.log10(np.maximum(d, p.log10_floor))

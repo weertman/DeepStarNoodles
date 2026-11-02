@@ -26,7 +26,7 @@ def same(a, b):
 
 @pytest.fixture(scope='module')
 def c():
-    return PolylineContainer.load(EXAMPLE)
+    return PolylineContainer.load(EXAMPLE, sidecar=True)
 
 
 @pytest.fixture(scope='module')
@@ -247,6 +247,8 @@ def test_fig4d_equals_reference_and_fixture(c, fx, tables, relink_ids):
         logd = np.array([np.nan if not np.isfinite(x) else float(np.log10(max(float(x), 1e-3))) for x in d])
         same(logd[win], np.asarray(ref['columns']['log_deformation'])[sel])
         same(logd[win], fr['fig4d_log_deformation'][fsel])
+        same(out['log_deformation'][win], fr['fig4d_log_deformation'][fsel])
+        same(out['log_deformation_window'][i][win], fr['fig4d_log_deformation'][fsel])
 
 
 def test_fig5_definitions_equal_reference_and_fixture(c, fx, relink_ids):

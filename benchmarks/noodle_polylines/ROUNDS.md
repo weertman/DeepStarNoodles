@@ -105,6 +105,26 @@ int64 index arrays; a CSR `np.repeat` of crop rows would avoid them.
 bit-identical**. With `--oracle`, the `_reference` ports themselves were checked on micro
 and the flipping clips: **2,625 checks, 0 failed, all bit-identical**.
 
+### Harness corrections after v0 (review)
+
+The v0 run predates these fixes to `bench.py`; read its numbers with them in mind:
+
+- **Peak RSS column is not per kernel.** v0 reused pool workers and reported the worker's
+  lifetime `ru_maxrss`, including the input build and any earlier kernel in that worker
+  (hence the flat 482 MB). `bench.py` now runs every job in a fresh process and reports
+  the RSS after the build and the kernel's own peak above it (VmHWM reset).
+- **Timings were concurrent and cold.** v0 ran 40 jobs at once with no warm-up, and the
+  T4.5 diagnostics once. The defaults are now `--jobs 1`, one untimed warm-up call and no
+  cap on the diagnostics repeats.
+- **The projection underestimated the tracker.** It took the largest input (the synthetic
+  micro tiling, 4–8 arms per frame, no gaps) and wall time. It now uses CPU time and
+  prefers the real subset. On v0 numbers the tracker pass is 660 µs/arm (subset), so
+  about 55 CPU-h per camera-year rather than 43.5. The synthetic input now tiles the
+  subset by default when `--data-dir` is given.
+- **The subset is not the parity subset.** It is the first 7 clips of `manifest.csv` and
+  the first 36 Sleepy segments in sort order; only 3 of those clips and 2 of those
+  segments are in the parity gate.
+
 ### Targets for the rounds
 
 1. **Tracker cost.** Use a batched (n, m, 12) `common_span_dist` and cost matrix per

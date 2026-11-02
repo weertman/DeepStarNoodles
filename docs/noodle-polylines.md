@@ -11,6 +11,11 @@ released GRU Noodle Tracer and has three kinds of output:
 The package needs only numpy and scipy. It does not import `deepstarnoodles`, whose
 `__init__` pulls in torch. It has no VAE, VAME or latent code.
 
+It ships inside the `deepstarnoodles` distribution, whose `pip` dependencies include
+ultralytics (and so torch), opencv and pandas. For a numpy + scipy-only environment, put
+`CORE/` on `PYTHONPATH` (or copy `CORE/noodle_polylines`), or install the repository with
+`pip install --no-deps .` next to `numpy` and `scipy`.
+
 Every definition reproduces the figure scripts bit for bit. Where two panels define a
 quantity differently, the library keeps both as an explicit, named option.
 `noodle_polylines._reference` holds slow, line-by-line ports of the figure-script code,
@@ -35,10 +40,16 @@ the number of arms, F the number of frames and P the number of points.
 | `support_area_model_px` | (F,) i32 | R0 | count of support > 0.5 pixels |
 | `support_centroid_model` | (F,2) f64 | T2.6 | support > 0.5 centroid |
 | `has_star` | (F,) bool | no (default true) | the frame was traced |
+| `source_frame_index` | (F,) i64 | no | original video frame when `concat` renumbered `frame_index` |
 | `identity` | (A,8) f32 | T4 | arm identity embedding |
 | `track_id` | (A,) i64 | no | stored association; −1 = none |
 | `tip_score`, `base_score`, `state_confidence`, `steps`, `stop_reason` | (A,) | no | pass-through; no figure uses them |
-| `meta_json` | str | yes | `fps`, `model_size`, `trace_contract`, `tracker_config`, … |
+| `meta_json` | str | yes | `fps`, `model_size`, `trace_contract`, `tracker_config`, `source_format`, … |
+
+`PolylineContainer.load(path)` reads only the `.npz`. `load(path, sidecar=True)` also merges
+the sibling `<stem>.json` (as the micro example ships its metadata); it is never read
+implicitly, because a sibling JSON may be an unrelated file such as the `infer_video`
+output the container was converted from.
 
 The data have two "centres" per frame, and the difference is deliberate:
 
@@ -65,14 +76,15 @@ Each adapter runs once, offline.
 - **Sleepy.** The segments have no `track_id`; re-link them.
 - **Inference.** The output is split into one container per `star_track_id`. Inference records
   have no body origin, timestamp or support area, so only non-body-relative T0/T1 and the
-  association can be computed from them.
+  association can be computed from them. If any arm lacks `identity`, that star's
+  `identity` is `None`, and a re-link raises `ContainerError`.
 
 Helpers:
 
 | Function | Purpose |
 |---|---|
-| `container.concat(parts, sort_by_time=True, dedupe_time_decimals=None)` | joins the segments of one animal |
-| `container.split_at_gaps(c, max_gap_s, min_frames)` | builds the Fig 6D Sleepy sequences (gap 16 s, at least 30 frames) |
+| `container.concat(parts, sort_by_time=True, dedupe_time_decimals=None, track_ids='auto')` | joins the segments of one animal; renumbers `frame_index` when the parts are separate videos (originals kept in `source_frame_index`), and then offsets each part's stored `track_id` so separately tracked parts never share an ID |
+| `container.split_at_gaps(c, max_gap_s, min_frames)` | builds the Fig 6D Sleepy sequences (gap 16 s, at least 30 frames); their diagnostics index is `round(t − t0)` (`tracking.sequence_index(c, by='time')`), which `diagnostics` picks by default for Sleepy containers |
 | `c.time_window(lo, hi, relative_to)` | cuts a window, e.g. a Fig 5 ±300-s boundary |
 | `c.select_frames(...)` | selects frames by index |
 
@@ -125,7 +137,7 @@ R0 is in source px.
 |---|---|---|---|---|---|---|
 | T3.1 | F | yes | `kinematics.arm_deformation(lag=…)` | median over linked arms of the Kabsch RMS residual of T1.6 / dt. `last_arm_frame` (default, Fig 5) bridges gaps; `prev_frame_reset` (Fig 4) resets after a frame with no star or no arms | R0/s | 4D (as log10 with floor 1e-3), 4E, 5B, 5C |
 | T3.2 | F | yes | `kinematics.tip_motion` | median ‖Δ((tip − origin)·scale/R0)‖ / dt over arms whose track was present in the last arm-bearing frame | R0/s | 5B, 5C |
-| T3.3 | A | yes | `kinematics.tip_angle_track` | T1.3 with time and `track_id` | deg | 6B, 6C |
+| T3.3 | A | yes | `kinematics.tip_angle_track` | T1.3 with time and `track_id`; by default float32 origin and angles for flipping (6C), float64 otherwise (6B) | deg | 6B, 6C |
 
 ### T4 association (optional, FusedTracker)
 
@@ -135,7 +147,7 @@ R0 is in source px.
 | T4.2 | F | `tracking.cost_matrix`, `tracking.step_costs` | `d + 2.0·‖e_i − e_j‖`; NaN where d > 120 | 6A, 6C |
 | T4.3 | F | `tracking.assign` | Hungarian assignment augmented with "unmatched" options at 90/2 | 6A |
 | T4.4 | S | `tracking.relink`, `tracking.track_ids` | sequential tracker; frames without arms are skipped, so `max_age = 16` counts arm-bearing updates; IDs start at 0 | 4D, 4E, 5B–D, 6A–D |
-| T4.5 | S | `tracking.diagnostics`, `rates`, `pooled` | continuation, forward–reverse Jaccard, jumps (> 30° with both radii ≥ 25 crop px), arm-weighted lifetime, stride precision (g = 2, 4, 8, 16), new-ID rate | 6D |
+| T4.5 | S | `tracking.diagnostics`, `rates`, `pooled` | continuation, forward–reverse Jaccard, jumps (> 30° with both radii ≥ 25 crop px), arm-weighted lifetime, stride precision (g = 2, 4, 8, 16), new-ID rate. Frame index: `frame_index` for flipping, `round(t − t0)` for Sleepy (`by='auto'` reads `meta['source_format']`); origin float32 for flipping, float64 otherwise (`origin_dtype='auto'`). The resolved choices are returned. | 6D |
 
 **Which IDs.** `track_ids(c, mode='auto')` uses the stored IDs when every arm has one, and
 re-links otherwise. On released flipping data the stored IDs equal a full-clip re-link
@@ -167,7 +179,8 @@ definitions. The `ctx` column lists the context each preset needs.
 | `FIG4E` | 4E | pre_onset | fig4e | prev_frame_reset | 0.0 | median | — | f64 | f64 | `bout=` |
 | `FIG5` | 5B–D | baseline | fig5 | last_arm_frame | NaN | nanmedian | NaN | f64 | f64 | `onset_s=` |
 | `FIG5_EXAMPLE` | 5A/B | baseline | fig5 | last_arm_frame | NaN | nanmedian | 0.0 | f64 | f64 | `onset_s=` |
-| `FIG6_FLIPPING` | 6A, 6C, 6D | — | — | — | — | — | — | f32 | f32 (star frames) | — |
+| `FIG6_FLIPPING` | 6A, 6D | — | — | — | — | — | — | f32 | f32 (star frames) | — |
+| `FIG6C` | 6C | — | — | — | — | — | — | f32 (f32 angles) | f32 (star frames) | — |
 | `FIG6_SLEEPY` | 6B, 6D | — | — | — | — | — | — | f64 | f64 | — |
 
 Panels differ in the last bits in a few places, and each preset reproduces its own panel:
@@ -175,10 +188,20 @@ Panels differ in the last bits in a few places, and each preset reproduces its o
 - **Fold asymmetry.** Fig 5 averages float32 tips; Fig 4 averages float64 source-px tips.
   They differ by up to 3e-5 relative.
 - **Order of scaling.** Fig 4 computes `L·side/512/R0`; Fig 5 computes `L·(side/512)/R0`.
-- **Tip angle.** The Fig 6 copies compute float32 angles; stats uses float64.
+- **Tip angle.** The Fig 6C kymograph (`prepare_figure_06_flip.py`) computes float32 angles of
+  float32 tips (`FIG6C`); Fig 6D stats and the Fig 6B example (which casts polylines to float64)
+  use float64 angles. The two differ by up to 2.2e-5 deg.
 
 An explicit `r0=` overrides the preset's policy. Without the R0 context, only the R0-free
 outputs are returned.
+
+**Fig 4D deformation is per bout.** With `windows=`, `FIG4D` runs the deformation once per bout
+window `[start − 2, stop + 2]`, taking shapes only from star frames in `[start − 3, stop + 2]`
+(`prepare_figure_04_tree_features.py:121-157`). A frame whose predecessor lies more than 1 s
+before the window is therefore NaN, as in the panel. `arm_deformation_window` and
+`log_deformation_window` (W, F) hold each bout's values; the (F,) `arm_deformation` and
+`log_deformation` take the first window that contains the frame and are NaN outside every
+window.
 
 Streaming over many files:
 

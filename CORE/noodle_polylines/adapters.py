@@ -21,7 +21,7 @@ from typing import Iterator
 
 import numpy as np
 
-from .container import STOP_REASON_CODES, PolylineContainer, _offsets
+from .container import STOP_REASON_CODES, ContainerError, PolylineContainer, _offsets
 
 FLIPPING_FPS = 2.0     # not stored in the flipping contract; prepare_figure_06_stats.py:180 hard-codes it
 SLEEPY_FPS = 1.0
@@ -178,7 +178,9 @@ def from_inference_json(path: str | Path, fps: float | None = None) -> dict[int 
     Single-star records (``{"frame", "detected", "crop", "arms"}``) give one container keyed ``None``;
     multi-star records (``{"frame", "stars": [{"star_track_id", "crop", "arms"}]}``) give one per
     ``star_track_id``. Each arm record supplies ``polyline_crop`` (crop-512 px, base->tip),
-    ``identity`` and an optional ``track_id`` (missing -> -1).
+    ``identity`` and an optional ``track_id`` (missing -> -1). If any arm of a star lacks ``identity``,
+    that star's ``identity`` is left ``None`` (listed in ``meta['missing_fields']``), so a re-link fails
+    with a clear :class:`ContainerError` instead of on NaN costs.
 
     The inference record has **no** body origin, timestamp or support area: those fields are left
     ``None`` (``time_s`` falls back to ``frame_index / fps`` when ``fps`` is given). Only the
@@ -189,7 +191,13 @@ def from_inference_json(path: str | Path, fps: float | None = None) -> dict[int 
     stars: dict[int | None, dict[str, list]] = {}
     for rec in _frame_records(path):
         if 'stars' in rec:
-            entries = [(int(s['star_track_id']), s.get('crop'), s.get('arms', [])) for s in rec['stars']]
+            entries = []
+            for s in rec['stars']:
+                sid = s.get('star_track_id')
+                if sid is None:
+                    raise ContainerError(f'{path.name}: frame {rec.get("frame")}: multi-star record without '
+                                         'a star_track_id (null or missing)')
+                entries.append((int(sid), s.get('crop'), s.get('arms', [])))
         else:
             entries = [(None, rec.get('crop'), rec.get('arms', []))] if (rec.get('detected', True)
                                                                          or rec.get('crop')) else []
@@ -197,7 +205,7 @@ def from_inference_json(path: str | Path, fps: float | None = None) -> dict[int 
                 entries = [(None, None, [])]
         for star, crop, arms in entries:
             s = stars.setdefault(star, {'frame': [], 'crop': [], 'has_star': [], 'polys': [], 'n': [],
-                                        'identity': [], 'track_id': []})
+                                        'identity': [], 'track_id': [], 'identity_missing': False})
             s['frame'].append(int(rec['frame']))
             s['has_star'].append(crop is not None)
             s['crop'].append([math.nan] * 3 if crop is None else [float(crop['left']), float(crop['top']),
@@ -208,6 +216,7 @@ def from_inference_json(path: str | Path, fps: float | None = None) -> dict[int 
                     raise ValueError(f'{path.name}: frame {rec["frame"]}: arm record lacks polyline_crop')
                 s['polys'].append(np.asarray(a['polyline_crop'], np.float32).reshape(-1, 2))
                 ident = a.get('identity')
+                s['identity_missing'] |= ident is None
                 s['identity'].append(np.full(8, np.nan, np.float32) if ident is None
                                      else np.asarray(ident, np.float32).reshape(8))
                 s['track_id'].append(int(a['track_id']) if a.get('track_id') is not None else -1)
@@ -217,9 +226,11 @@ def from_inference_json(path: str | Path, fps: float | None = None) -> dict[int 
         if not np.array_equal(order, np.arange(len(order))):
             raise ValueError(f'{path.name}: frames are not in increasing order')
         polys = s['polys']
+        missing = ['body_origin_model', 'time_s', 'support_area_model_px']
+        if s['identity_missing']:
+            missing.append('identity')
         meta = {'model_size': 512, 'source_format': 'infer_video', 'star_track_id': star,
-                'track_id_scope': 'star_track_id', 'missing_fields': ['body_origin_model', 'time_s',
-                                                                      'support_area_model_px']}
+                'track_id_scope': 'star_track_id', 'missing_fields': missing}
         if fps is not None:
             meta['fps'] = float(fps)
         c = PolylineContainer(
@@ -229,7 +240,7 @@ def from_inference_json(path: str | Path, fps: float | None = None) -> dict[int 
             frame_index=np.asarray(s['frame'], np.int64),
             crop=np.asarray(s['crop'], np.float64).reshape(-1, 3),
             has_star=np.asarray(s['has_star'], bool),
-            identity=np.asarray(s['identity'], np.float32).reshape(-1, 8),
+            identity=None if s['identity_missing'] else np.asarray(s['identity'], np.float32).reshape(-1, 8),
             track_id=np.asarray(s['track_id'], np.int64),
             meta=meta)
         out[star] = c.validate()

@@ -16,7 +16,7 @@ from __future__ import annotations
 from . import adapters, frames, geometry, kinematics, pipeline, presets, scale, tracking
 from .container import ContainerError, PolylineContainer, concat, from_arrays, from_polylines, split_at_gaps
 from .pipeline import compute_many, iter_sequences
-from .presets import (FIG4B, FIG4D, FIG4E, FIG5, FIG5_EXAMPLE, FIG6_FLIPPING, FIG6_SLEEPY, PRESETS, Preset,
+from .presets import (FIG4B, FIG4D, FIG4E, FIG5, FIG5_EXAMPLE, FIG6_FLIPPING, FIG6C, FIG6_SLEEPY, PRESETS, Preset,
                       compute_all)
 from .tracking import RELEASED, TrackerConfig
 
@@ -24,6 +24,6 @@ __version__ = '0.1.0'
 __all__ = [
     'PolylineContainer', 'ContainerError', 'concat', 'from_arrays', 'from_polylines', 'split_at_gaps',
     'adapters', 'geometry', 'frames', 'kinematics', 'tracking', 'scale', 'presets', 'pipeline',
-    'Preset', 'PRESETS', 'FIG4B', 'FIG4D', 'FIG4E', 'FIG5', 'FIG5_EXAMPLE', 'FIG6_FLIPPING', 'FIG6_SLEEPY',
+    'Preset', 'PRESETS', 'FIG4B', 'FIG4D', 'FIG4E', 'FIG5', 'FIG5_EXAMPLE', 'FIG6_FLIPPING', 'FIG6C', 'FIG6_SLEEPY',
     'compute_all', 'compute_many', 'iter_sequences', 'TrackerConfig', 'RELEASED',
 ]

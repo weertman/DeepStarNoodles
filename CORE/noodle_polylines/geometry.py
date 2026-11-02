@@ -148,7 +148,8 @@ def tip_polar(points: np.ndarray, arm_point_offsets: np.ndarray, frame_arm_offse
 
     ``angle = degrees(atan2(-y, x)) mod 360`` of the raw tip minus the origin. ``origin_dtype`` picks the
     subtraction: 'float64' (Sleepy, Fig 5/6 example) or 'float32' (flipping ``stats.flipping_sequences``).
-    ``angle_dtype='float32'`` reproduces the float32 angles of the Fig 6B/C copies (prepare_figure_06_flip.py:117).
+    ``angle_dtype='float32'`` reproduces the float32 angles of the Fig 6C kymograph (prepare_figure_06_flip.py:117);
+    Fig 6B (06_example) casts its polylines to float64, so its angles are float64.
     Source: prepare_figure_06_stats.py:225-230.
     """
     tips32 = arm_tips(points, arm_point_offsets)

@@ -6,11 +6,17 @@ re-trace: the micro example, 7 full flipping clips and a 3-animal Sleepy Stars s
 boundaries, 36 segments). Every optimisation round must pass this gate unchanged.
 
     python benchmarks/noodle_polylines/parity_check.py --ref <store>/ref \
-        --data-dir RUNS/paper_retrace_f39dc82b [--only micro,flip,sleepy] [--quick] [--jobs 16]
+        --data-dir RUNS/paper_retrace_f39dc82b [--sources <store>/inputs/sources.json] \
+        [--only micro,flip,sleepy] [--quick] [--jobs 16]
+
+The released clip behind each store entry (and the source of the micro example) is read from the
+store's own ``sources.json`` ({"flip_clips": {name: clip_id}, "micro": {"clip": clip_id,
+"frame_range": [lo, hi]}}), which is not committed. Without it the adapter cross-check is skipped and
+the store's input containers are used.
 
 Tolerances (never loosened silently): integer, label, mask and decision outputs exact; tip-first
-resample <= 1e-5 px; every other float rtol 1e-9 with identical NaN positions. The table also says
-whether a float output is bit-identical.
+resample <= 1e-5 px; every other float rtol 1e-9 with identical NaN and +-inf positions. The table also
+says whether a float output is bit-identical.
 """
 from __future__ import annotations
 
@@ -34,16 +40,12 @@ from noodle_polylines import _reference as R  # noqa: E402
 from noodle_polylines import frames as FR, geometry as G, kinematics as KI, scale as SC, tracking as TR  # noqa: E402
 from noodle_polylines.container import PolylineContainer, concat, split_at_gaps  # noqa: E402
 
-FLIP_CLIPS = {
-    'flip_R2_W1_12C_i2': 'R2_W1_12C/i2/0-12_04_23-14_02_09-i2',
-    'flip_R1_W1_12C_p9': 'R1_W1_12C/p9/0-11_12_23-13_26_32-p9',
-    'flip_R1_W1_12C_i3': 'R1_W1_12C/i3/0-11_12_23-14_10_13-i3',
-    'flip_R1_W1_12C_i11': 'R1_W1_12C/i11/0-11_12_23-14_51_47-i11',
-    'flip_R1_W2_14-5C_i7': 'R1_W2_14-5C/i7/0-11_19_23-13_22_44-i7',
-    'flip_R2_W2_12C_p8': 'R2_W2_12C/p8/0-12_10_23-13_46_42-p8',
-    'flip_R3_W1_12C_p5': 'R3_W1_12C/p5/1-12_14_23-13_34_54-p5',
-}
-MICRO = ('R2_W1_12C/i2/0-12_04_23-14_02_09-i2', (640, 820))
+def load_sources(path: Path | None) -> dict:
+    """{'flip_clips': {store name: clip id}, 'micro': {'clip', 'frame_range'}} from the store (not committed)."""
+    if path is None or not Path(path).exists():
+        return {'flip_clips': {}, 'micro': None}
+    d = json.loads(Path(path).read_text())
+    return {'flip_clips': dict(d.get('flip_clips', {})), 'micro': d.get('micro')}
 STATE_NAMES = {0: 'Right Side Up', 1: 'Being flipped', 2: 'Upside Down'}
 SLEEPY_STATES = ('quiescent', 'SA', 'moving')
 RESAMPLE_ATOL = 1e-5
@@ -68,8 +70,10 @@ class Checks:
                 row.update(ok=bool(eq), bit=bool(eq), detail='' if eq else f'{int(np.sum(g != r))} differ')
             else:
                 g64, r64 = g.astype(np.float64), r.astype(np.float64)
-                nan_ok = np.array_equal(np.isnan(g64), np.isnan(r64))
-                m = np.isfinite(r64) & np.isfinite(g64)
+                gf, rf = np.isfinite(g64), np.isfinite(r64)
+                # NaN, +inf and -inf must sit at the same positions with the same values
+                nan_ok = np.array_equal(gf, rf) and np.array_equal(g64[~gf], r64[~rf], equal_nan=True)
+                m = rf & gf
                 bit = nan_ok and np.array_equal(g64, r64, equal_nan=True)
                 d = np.abs(g64[m] - r64[m])
                 mx = float(d.max()) if d.size else 0.0
@@ -82,7 +86,7 @@ class Checks:
                     ok = nan_ok and bool(np.all(d <= RTOL * np.abs(r64[m]) + 1e-300) or mr <= RTOL)
                     detail = f'max rel {mr:.3g}'
                 if not nan_ok:
-                    detail += ' NaN mask differs'
+                    detail += ' non-finite (NaN/inf) entries differ'
                 row.update(ok=bool(ok), bit=bool(bit), detail=detail, n=int(r.size))
         except Exception as exc:   # noqa: BLE001
             row.update(ok=False, bit=False, detail=f'error {exc!r}')
@@ -104,10 +108,14 @@ def ragged_eq(values, offsets):
 
 
 # ------------------------------------------------------------------------------------------ flipping
-def flip_container(name: str, ref: Path, data_dir: Path | None, chk: Checks) -> PolylineContainer:
+def flip_container(name: str, ref: Path, data_dir: Path | None, chk: Checks, sources: dict) -> PolylineContainer:
     rc = PolylineContainer.load(ref / name / 'input_container.npz', validate=False, strict=False)
-    if data_dir is not None:
-        clip, rng = (MICRO if name == 'micro' else (FLIP_CLIPS[name], None))
+    if name == 'micro':
+        mi = sources.get('micro')
+        clip, rng = (mi['clip'], tuple(mi['frame_range'])) if mi else (None, None)
+    else:
+        clip, rng = sources.get('flip_clips', {}).get(name), None
+    if data_dir is not None and clip is not None:
         folder = data_dir / 'flipping' / 'clips' / clip
         if folder.exists():
             c = NP.adapters.from_flipping_clip(folder, frame_range=rng)
@@ -120,12 +128,12 @@ def flip_container(name: str, ref: Path, data_dir: Path | None, chk: Checks) -> 
     return rc.validate()
 
 
-def check_flip(name: str, ref_root: str, data_dir: str | None, quick: bool) -> list[dict]:
+def check_flip(name: str, ref_root: str, data_dir: str | None, quick: bool, sources: dict | None = None) -> list[dict]:
     ref = Path(ref_root)
     d = ref / name
     chk = Checks(name)
     t0 = time.perf_counter()
-    c = flip_container(name, ref, Path(data_dir) if data_dir else None, chk)
+    c = flip_container(name, ref, Path(data_dir) if data_dir else None, chk, sources or {})
     pts, ao, fo = c.points, c.arm_point_offsets, c.frame_arm_offsets
     af = c.arm_frame()
     a = np.load(d / 'T0_T1_arms.npz')
@@ -189,7 +197,7 @@ def check_flip(name: str, ref_root: str, data_dir: str | None, quick: bool) -> l
         chk.add('T4.1 common_span_dist (9,547 calls)', got, cs['d'])
     # T3.3 / T1.3 (stats path: star frames, f32 origin)
     tt = np.load(d / 'T3_3_tip_angle_track.npz')
-    tr = KI.tip_angle_track(c, ids, origin_dtype='float32')
+    tr = KI.tip_angle_track(c, ids, origin_dtype='float32', angle_dtype='float64')
     chk.add('T1.3/T3.3 tip angle (f32 origin, f64 angle)', tr['tip_angle_deg'], tt['tip_angle_deg'])
     chk.add('T1.3 tip radius', tr['tip_radius_px'], tt['tip_radius_px'])
     a32, _ = G.tip_polar(pts, ao, fo, c.body_origin_model, 'float32', 'float32')
@@ -252,6 +260,8 @@ def check_flip(name: str, ref_root: str, data_dir: str | None, quick: bool) -> l
         s12 = np.load(d / 'T1_6_shape12.npz')
         for e, r0 in enumerate(s12['r0']):
             chk.add(f'T1.6 shape12 ev{e}', G.shape12(base, c.crop[af, 2], r0, 'fig5'), s12[f'shape12_event{e}'])
+    # Presets: compute_all must reproduce each panel on the full clip (stored IDs = the full-clip re-link)
+    check_presets_flip(chk, c, d, kj, kz_, tj, tz, fj, tt, ids, 'relink' if name == 'micro' else 'stored')
     # Fig 6A / 6C step cost blocks
     sp = d / 'T4_2_T4_3_fig6_steps.json'
     if sp.exists():
@@ -299,6 +309,42 @@ def check_flip(name: str, ref_root: str, data_dir: str | None, quick: bool) -> l
     chk.rows.append({'scope': name, 'rep': '(wall s)', 'kind': 'info', 'ok': True, 'bit': True,
                      'detail': f'{time.perf_counter() - t0:.1f}'})
     return chk.rows
+
+
+def check_presets_flip(chk: Checks, c: PolylineContainer, d: Path, kj, kz_, tj, tz, fj, tt, ids, track: str) -> None:
+    """compute_all per preset against the store (the same reference values as the per-function checks).
+
+    ``track``: 'stored' on full clips (stored IDs == the full-clip re-link, checked above); 'relink' on the
+    micro excerpt, whose store values come from a cold re-link of the excerpt."""
+    t = c.times()
+    for e, ev in enumerate(kj['events']):
+        out = NP.compute_all(c, 'fig4e', bout=ev, track=track)
+        win = (t >= ev['first_time_s']) & (t <= ev['last_time_s'])
+        sel = kz_['event_id'] == e
+        for k in ('fold_asymmetry', 'arm_length_spread', 'arm_curvature', 'arm_deformation'):
+            chk.add(f'preset fig4e ev{e} {k}', out[k][win], kz_[k][sel])
+    wins = [(b['start_s'], b['stop_s']) for b in tj['bouts']]
+    out = NP.compute_all(c, 'fig4d', windows=wins, track=track)
+    chk.add('preset fig4d R0', float(out['r0']), tj['T0_7_R0_outside_windows'])
+    for i, (s_, e_) in enumerate(wins):
+        win = (t >= s_ - 2.0) & (t <= e_ + 2.0)
+        sel = tz['bout_id'] == i
+        for k in ('fold_asymmetry', 'arm_length_spread', 'arm_curvature', 'log_deformation'):
+            chk.add(f'preset fig4d bout{i} {k}', out[k][win], tz[k][sel])
+        chk.add(f'preset fig4d bout{i} log_deformation_window', out['log_deformation_window'][i][win],
+                tz['log_deformation'][sel])
+    for tag, run in fj['runs'].items():
+        z5 = np.load(d / f'fig5_measures_{tag}.npz')
+        out = NP.compute_all(c, 'fig5', r0=run['r0'], track=track)
+        for k in ('fold_asymmetry', 'arm_length_spread', 'arm_curvature', 'tip_motion', 'arm_deformation'):
+            chk.add(f'preset fig5[{tag}] {k}', out[k], z5[k])
+    out = NP.compute_all(c, 'fig6_flipping', track=track)
+    chk.add('preset fig6_flipping tip_angle (6D)', out['tip_angle_deg'], tt['tip_angle_deg'])
+    chk.add('preset fig6_flipping tip_radius', out['tip_radius_px'], tt['tip_radius_px'])
+    chk.add('preset fig6_flipping track_id', out['track_id'], ids, 'exact')
+    out = NP.compute_all(c, 'fig6c', track=track)
+    chk.add('preset fig6c tip_angle (6C, f32)', out['tip_angle_deg'], tt['tip_angle_deg_fig6_flip_copy_f32'])
+    chk.add('preset fig6c tip_angle dtype', str(out['tip_angle_deg'].dtype), 'float32', 'exact')
 
 
 def check_oracle(name: str, ref_root: str, quick: bool) -> list[dict]:
@@ -455,6 +501,11 @@ def check_sleepy_events(events: list[int], ref_root: str, data_dir: str, inputs:
         chk.add(f'b{b} arm_curvature', FR.arm_curvature(w, r0, 'fig5', kn), m['arm_curvature'][sel])
         chk.add(f'b{b} tip_motion', KI.tip_motion(w, r0, ids), m['tip_motion'][sel])
         chk.add(f'b{b} arm_deformation lag B', KI.arm_deformation(w, r0, ids, base=base), m['arm_deformation'][sel])
+        pre = NP.compute_all(w, 'fig5', onset_s=event['onset_ts'], track='relink')
+        chk.add(f'b{b} preset fig5 R0', float(pre['r0']), ej['T0_7_R0_baseline'])
+        chk.add(f'b{b} preset fig5 track_id', pre['track_id'], ids, 'exact')
+        for k in ('fold_asymmetry', 'arm_length_spread', 'arm_curvature', 'tip_motion', 'arm_deformation'):
+            chk.add(f'b{b} preset fig5 {k}', pre[k], m[k][sel])
         lsel = lag['boundary'] == b
         chk.add(f'b{b} arm_deformation lag A', KI.arm_deformation(w, r0, ids, lag='prev_frame_reset', base=base),
                 lag['lag_a_prev_frame_reset'][lsel])
@@ -527,6 +578,16 @@ def check_sleepy_sequences(names: list[str] | None, ref_root: str, data_dir: str
                     _jd(meta['per_variant'][v]['by_state'].get('all'), sort_keys=True), 'exact')
         chk.add(f'{nm} strides', _jd({str(k): v for k, v in diag['strides'].items()}, sort_keys=True),
                 _jd(meta['strides'], sort_keys=True), 'exact')
+        # the defaults must pick the Sleepy time index and float64 origin on their own
+        dflt = TR.diagnostics(seq, variants={'fused': TR.RELEASED}, strides=())
+        chk.add(f'{nm} default-args index_by/origin', f"{dflt['index_by']}/{dflt['origin_dtype']}", 'time/float64',
+                'exact')
+        chk.add(f'{nm} default-args fused counters[all]', _jd(dflt['fused']['by_state'].get('all'), sort_keys=True),
+                _jd(meta['per_variant']['fused']['by_state'].get('all'), sort_keys=True), 'exact')
+        chk.add(f'{nm} default-args duration_s', dflt['duration_s'], diag['duration_s'], 'exact')
+        pre = NP.compute_all(seq, 'fig6_sleepy', track='relink')
+        chk.add(f'{nm} preset fig6_sleepy tip_angle', pre['tip_angle_deg'], z[f'{nm}__tip_angle_deg'])
+        chk.add(f'{nm} preset fig6_sleepy track_id', pre['track_id'], z[f'{nm}__labels_fused_fwd'], 'exact')
     return chk.rows
 
 
@@ -536,6 +597,8 @@ def main(argv=None) -> int:
     ap.add_argument('--ref', required=True, type=Path, help='parity store ref/ directory')
     ap.add_argument('--inputs', type=Path, default=None, help='parity store inputs/ (default: <ref>/../inputs)')
     ap.add_argument('--data-dir', type=Path, default=None, help='released re-trace root (paper_retrace_f39dc82b)')
+    ap.add_argument('--sources', type=Path, default=None,
+                    help='store entry -> released clip map (default: <inputs>/sources.json; not committed)')
     ap.add_argument('--only', default='micro,flip,sleepy')
     ap.add_argument('--quick', action='store_true', help='skip the 10-pass Fig 6D diagnostics and most events')
     ap.add_argument('--jobs', type=int, default=min(16, os.cpu_count() or 1))
@@ -544,19 +607,19 @@ def main(argv=None) -> int:
     ap.add_argument('--verbose', action='store_true', help='print every row, not only failures and a summary')
     args = ap.parse_args(argv)
     inputs = args.inputs or args.ref.parent / 'inputs'
+    sources = load_sources(args.sources or inputs / 'sources.json')
     only = set(args.only.split(','))
     data = str(args.data_dir) if args.data_dir else None
     jobs = []
     if 'micro' in only:
-        jobs.append((check_flip, ('micro', str(args.ref), data, args.quick)))
+        jobs.append((check_flip, ('micro', str(args.ref), data, args.quick, sources)))
         if args.oracle:
             jobs.append((check_oracle, ('micro', str(args.ref), args.quick)))
     if 'flip' in only:
-        for name in FLIP_CLIPS:
-            if (args.ref / name).exists():
-                jobs.append((check_flip, (name, str(args.ref), data, args.quick)))
-                if args.oracle:
-                    jobs.append((check_oracle, (name, str(args.ref), args.quick)))
+        for name in sorted(p.name for p in args.ref.glob('flip_*') if (p / 'input_container.npz').exists()):
+            jobs.append((check_flip, (name, str(args.ref), data, args.quick, sources)))
+            if args.oracle:
+                jobs.append((check_oracle, (name, str(args.ref), args.quick)))
     if 'sleepy' in only:
         if data is None:
             print('sleepy checks need --data-dir (segments are read with the adapter)', file=sys.stderr)

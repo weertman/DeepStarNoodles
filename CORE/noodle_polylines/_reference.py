@@ -113,7 +113,10 @@ def tip_polar_stats(frames: list[dict]) -> list[tuple[np.ndarray, np.ndarray]]:
 
 
 def tip_angle_fig6_copy(f: dict) -> np.ndarray:
-    """prepare_figure_06_flip.py:117-118 / 06_example:135-138 (no float cast: float32 angles for f32 tips)."""
+    """prepare_figure_06_flip.py:117-118 (6C): no float cast, so float32 tips give float32 angles.
+
+    06_example:135-138 (6B) runs the same expression on polylines it cast to float64 (line 98), so 6B
+    angles are float64 (= :func:`tip_polar_stats`)."""
     tips = np.array([a['poly'][-1] for a in f['arms']]).reshape(-1, 2)
     return np.degrees(np.arctan2(-tips[:, 1], tips[:, 0])) % 360
 

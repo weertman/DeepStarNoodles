@@ -42,8 +42,8 @@ def main() -> None:
     ap.add_argument('--out', type=Path, default=None, help='write every output array as .npz files here')
     args = ap.parse_args()
 
-    # 1. load + validate (pickle-free; the sibling .json supplies fps, bouts and configs)
-    c = NP.PolylineContainer.load(args.data)
+    # 1. load + validate (pickle-free; sidecar=True merges the sibling .json: fps, bouts and configs)
+    c = NP.PolylineContainer.load(args.data, sidecar=True)
     bouts = c.meta['bouts']
     t = c.times()
     print(f'{c.meta["sequence_id"]}: {c.n_frames} frames ({t[0]:.1f}-{t[-1]:.1f} s at {c.fps:g} Hz), '
@@ -107,7 +107,7 @@ def main() -> None:
     outputs['per_frame'] = per_frame
 
     # 6. T3.3 tip angles per track in the Fig 6C window (360-402 s)
-    track = KI.tip_angle_track(c, stored, origin_dtype='float32')
+    track = KI.tip_angle_track(c, stored, origin_dtype='float32', angle_dtype='float32')   # Fig 6C dtypes
     w6 = (track['time_s'] >= 360) & (track['time_s'] <= 402)
     print(f'\nT3.3 Fig 6C window: {w6.sum()} arm tips on {len(np.unique(track["track_id"][w6]))} tracks')
     outputs['tip_angle_track'] = track
@@ -121,7 +121,7 @@ def main() -> None:
     outputs['step_372s'] = {kk: v for kk, v in step.items()}
 
     # 8. T4.5 Fig 6D diagnostics on the excerpt (lifetimes are capped by the 90-s excerpt)
-    diag = TR.diagnostics(c)
+    diag = TR.diagnostics(c, origin_dtype='float32', by='frame_index')   # the flipping Fig 6D path
     rates = TR.rates([diag['fused']['by_state']['all']])
     print(f'T4.5 diagnostics: continuation {rates["continuation"]:.3f}, forward-reverse agreement '
           f'{rates["forward_reverse_agreement"]:.3f}, jumps {rates["jumps_per_1000_links"]:.1f}/1,000 links, '
@@ -132,7 +132,8 @@ def main() -> None:
     print('\nPresets (compute_all):')
     for name, kw in (('fig4b', {}), ('fig4d', {'windows': [(b['upside_down_start_s'], b['right_side_up_start_s'])
                                                            for b in bouts]}),
-                     ('fig4e', {'bout': bouts[0]}), ('fig5', {'r0': r0.r0}), ('fig6_flipping', {})):
+                     ('fig4e', {'bout': bouts[0]}), ('fig5', {'r0': r0.r0}), ('fig6_flipping', {}),
+                     ('fig6c', {})):
         out = NP.compute_all(c, name, **kw)
         outputs[f'preset_{name}'] = out
         print(f'  {name:<14} {len(out)} arrays: {", ".join(sorted(out)[:8])}, ...')

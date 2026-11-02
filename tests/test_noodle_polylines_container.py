@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -32,17 +33,19 @@ def test_example_data_contract():
     with np.load(npz, allow_pickle=False) as z:
         assert z['points'].dtype == np.float32 and not any(z[k].dtype == object for k in z.files)
     text = meta.read_text()
-    for bad in ('/home', '/media', 'weertman', 'R2_W1', '.mp4', 'sha256', '0-12_04_23'):
+    for bad in ('/home', '/media', 'weertman', '.mp4', 'sha256'):
         assert bad not in text
+    # no session code or source video stem (patterns, so this file does not name the source either)
+    assert not re.search(r'R\d_W\d|\d{1,2}-\d\d_\d\d_\d\d-\d\d_\d\d_\d\d', text)
     m = json.loads(text)
     assert m['license'] == 'CC-BY-4.0' and m['fps'] == 2.0 and len(m['bouts']) == 2
-    c = PolylineContainer.load(npz)
+    c = PolylineContainer.load(npz, sidecar=True)
     assert (c.n_frames, c.n_arms, c.n_points) == (181, 1226, 34144)
     assert c.fps == 2.0 and c.has_track_id()
 
 
 def test_roundtrip_and_slicing(tmp_path):
-    c = PolylineContainer.load(DATA / 'flip_example_01.npz')
+    c = PolylineContainer.load(DATA / 'flip_example_01.npz', sidecar=True)
     p = c.save(tmp_path / 'x.npz')
     with np.load(p, allow_pickle=False) as z:
         assert 'meta_json' in z.files
@@ -134,7 +137,7 @@ def test_inference_adapter(tmp_path):
 
 
 def test_flipping_adapter(tmp_path):
-    stem = '0-01_01_23-00_00_00-x1'
+    stem = 'clip-x1'
     folder = tmp_path / 'clips' / 'S' / 'x1' / stem
     folder.mkdir(parents=True)
     fields = ['frame', 'time_s', 'has_star', 'crop_left', 'crop_top', 'crop_side', 'body_cx_model', 'body_cy_model',

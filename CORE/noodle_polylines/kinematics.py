@@ -127,13 +127,20 @@ def tip_motion(c: PolylineContainer, r0, track_id: np.ndarray | None = None) -> 
     return out
 
 
-def tip_angle_track(c: PolylineContainer, track_id: np.ndarray | None = None, origin_dtype: str = 'float64',
-                    angle_dtype: str = 'float64') -> dict[str, np.ndarray]:
+def tip_angle_track(c: PolylineContainer, track_id: np.ndarray | None = None, origin_dtype: str = 'auto',
+                    angle_dtype: str = 'auto') -> dict[str, np.ndarray]:
     """T3.3 (A,) tip angle (deg) and radius (crop px) with each arm's frame time and track ID (Fig 6B/C).
 
-    See :func:`noodle_polylines.geometry.tip_polar` for the dtype options."""
+    See :func:`noodle_polylines.geometry.tip_polar` for the dtype options. ``'auto'`` follows the panel of
+    the container's ``meta['source_format']``: flipping -> the Fig 6C kymograph (float32 origin, float32
+    angles, prepare_figure_06_flip.py:117-118); anything else -> Fig 6B (float64 origin and angles)."""
     c.require('body_origin_model')
     tid = _track(c, track_id)
+    flipping = c.meta.get('source_format') == 'flipping'
+    if origin_dtype == 'auto':
+        origin_dtype = 'float32' if flipping else 'float64'
+    if angle_dtype == 'auto':
+        angle_dtype = 'float32' if flipping and origin_dtype == 'float32' else 'float64'
     angle, radius = G.tip_polar(c.points, c.arm_point_offsets, c.frame_arm_offsets, c.body_origin_model,
                                 origin_dtype=origin_dtype, angle_dtype=angle_dtype)
     af = c.arm_frame()
