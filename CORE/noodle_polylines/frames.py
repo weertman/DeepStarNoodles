@@ -114,8 +114,7 @@ def fold_asymmetry(c: PolylineContainer, r0, variant: str = 'fig5') -> np.ndarra
 
 def _per_arm_lengths(c, r0, variant, arc_length):
     if arc_length is None:
-        arc_length, _ = G.arc_length_curvature(c.points, c.arm_point_offsets,
-                                               two_point='nan' if variant == 'fig5' else 'zero')
+        arc_length, _ = G.arm_metrics(c, two_point='nan' if variant == 'fig5' else 'zero')
     return arc_length
 
 
@@ -159,8 +158,7 @@ def arm_curvature(c: PolylineContainer, r0, variant: str = 'fig5', curvature: np
     F = c.n_frames
     r0 = _r0_per_frame(r0, F)
     if curvature is None:
-        _, curvature = G.arc_length_curvature(c.points, c.arm_point_offsets,
-                                              two_point='nan' if variant == 'fig5' else 'zero')
+        _, curvature = G.arm_metrics(c, two_point='nan' if variant == 'fig5' else 'zero')
     ok = valid_frames(c, variant)
     out = np.full(F, np.nan)
     fo = c.frame_arm_offsets
@@ -183,7 +181,7 @@ def frame_lists_4b(c: PolylineContainer, arc_length: np.ndarray | None = None,
     """T2.5 Fig 4B right panel: per arm normalised length (T1.2) and curvature x per-frame model radius;
     per frame the mean normalised length (NaN without arms). Source: prepare_figure_04.py:128-143."""
     if arc_length is None or curvature is None:
-        arc_length, curvature = G.arc_length_curvature(c.points, c.arm_point_offsets, two_point='zero')
+        arc_length, curvature = G.arm_metrics(c, two_point='zero')
     r_model, _ = body_radius(c, empty='nan')
     nl = G.norm_length(arc_length, c.frame_arm_offsets, r_model)
     kr = curvature * r_model[c.arm_frame()]

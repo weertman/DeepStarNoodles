@@ -125,6 +125,36 @@ class PolylineContainer:
     def has_track_id(self) -> bool:
         return self.track_id is not None and self.n_arms > 0 and bool(np.all(self.track_id >= 0))
 
+    # ------------------------------------------------------------------ derived-array cache
+    def derived(self, key, deps: tuple[str, ...], compute):
+        """Memoised per-container derived array(s), e.g. the resampled shapes shared by T3 and T4.
+
+        ``compute()`` runs once per ``key``; the value is reused while every field named in ``deps`` is
+        still the same object (rebinding a field, as :meth:`with_fields` does on a new container,
+        invalidates it). Cached arrays are made read-only. After modifying a field's array **in place**,
+        call :meth:`clear_cache`.
+        """
+        cache = self.__dict__.setdefault('_derived_cache', {})
+        refs = tuple(getattr(self, d) for d in deps)
+        hit = cache.get(key)
+        if hit is not None and len(hit[0]) == len(refs) and all(a is b for a, b in zip(hit[0], refs)):
+            return hit[1]
+        value = compute()
+        for v in (value if isinstance(value, tuple) else (value,)):
+            if isinstance(v, np.ndarray):
+                v.setflags(write=False)
+        cache[key] = (refs, value)
+        return value
+
+    def clear_cache(self) -> None:
+        """Drop every cached derived array (see :meth:`derived`)."""
+        self.__dict__.pop('_derived_cache', None)
+
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        state.pop('_derived_cache', None)      # never pickle the cache (process pools)
+        return state
+
     # ------------------------------------------------------------------ validation
     def validate(self) -> 'PolylineContainer':
         p, ao, fo = self.points, self.arm_point_offsets, self.frame_arm_offsets

@@ -30,7 +30,7 @@ def rigid_residual(a: np.ndarray, b: np.ndarray) -> float:
 
 def _shapes(c: PolylineContainer, r0: np.ndarray, order: str, base: np.ndarray | None) -> np.ndarray:
     if base is None:
-        base = G.resample_base(c.points, c.arm_point_offsets)
+        base = G.base_shapes(c)
     af = c.arm_frame()
     return G.shape12(base, c.crop[af, 2], r0[af], order=order)
 

@@ -98,6 +98,8 @@ def tracker_inputs(c: PolylineContainer, origin_dtype: str = 'float64', k: int =
                    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Body-relative tip-first resamples (A,k,2) f32, lengths (A,) f32 and embeddings (A,8) f32.
 
+    The resamples are computed once per container and origin dtype and returned read-only.
+
     ``origin_dtype`` 'float64' reproduces the figure scripts (``poly - origin`` in float64), 'float32' the
     runtime and Fig 6 stats path; on released data both give bit-identical inputs.
     """
@@ -106,9 +108,16 @@ def tracker_inputs(c: PolylineContainer, origin_dtype: str = 'float64', k: int =
     if c.n_arms and not np.all(np.isfinite(c.identity)):
         raise ContainerError('identity has non-finite entries (arms without an identity embedding); '
                              'the tracker needs a finite (A,8) identity for every arm')
-    origin = c.body_origin_model[c.arm_frame()].astype(origin_dtype)
-    sampled, lengths = G.resample_tip(c.points, c.arm_point_offsets, k, arm_origin=origin)
-    return sampled, lengths.astype(np.float32), c.identity
+
+    def compute():
+        origin = c.body_origin_model[c.arm_frame()].astype(origin_dtype)
+        sampled, lengths = G.resample_tip(c.points, c.arm_point_offsets, k, arm_origin=origin)
+        return sampled, lengths.astype(np.float32)
+
+    # cached on the container: one resample serves every tracker pass (relink, step costs, diagnostics)
+    sampled, lengths = c.derived(('tracker_inputs', origin_dtype, k),
+                                 ('points', 'arm_point_offsets', 'frame_arm_offsets', 'body_origin_model'), compute)
+    return sampled, lengths, c.identity
 
 
 def _frames(c: PolylineContainer, frames, require_finite_origin: bool) -> np.ndarray:

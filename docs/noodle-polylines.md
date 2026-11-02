@@ -214,6 +214,14 @@ for name, out in compute_many(paths, 'fig5', context={'seg_x': {'onset_s': 1.78e
 This loads one container at a time, so memory is bounded by the largest sequence. Parallel
 work splits by file; the tracker is sequential within a sequence.
 
+The per-arm kernels (`resample_base`, `resample_tip`, `arc_length_curvature`) work on the whole
+CSR array at once, in blocks of 8,192 arms, and give bit-identical results to the per-arm script code.
+A container caches the derived arrays that several representations share:
+`geometry.base_shapes(c)` (T0.2 base, used by T1.6/T3.1), `geometry.arm_metrics(c, two_point)`
+(T0.3/T1.1, used by T2) and `tracking.tracker_inputs(c)` (T0.2 tip, used by every tracker pass).
+Cached arrays are read-only. The cache is dropped when a field is rebound (as `with_fields` does)
+and is never pickled. After an in-place edit of a field's array, call `c.clear_cache()`.
+
 ## Running
 
 ```bash

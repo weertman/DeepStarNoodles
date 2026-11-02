@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import _reference as R
+from . import _csr
+from .container import _ranges
 
 MODEL_SIZE = 512
 K = 12
@@ -36,17 +37,103 @@ def arm_bases(points: np.ndarray, arm_point_offsets: np.ndarray) -> np.ndarray:
     return points[arm_point_offsets[:-1]]
 
 
+# ------------------------------------------------------------------------------------ batching
+# Kernels run over blocks of arms so their temporaries stay small (tens of MB).
+CHUNK_ARMS = 1 << 13     # 8,192 arms: temporaries stay in cache-sized blocks (faster than larger blocks)
+
+
+def _chunks(arm_point_offsets: np.ndarray, chunk: int = CHUNK_ARMS):
+    """Yield ``(a0, a1, p0, p1, rebased offsets)`` for consecutive blocks of at most ``chunk`` arms."""
+    A = len(arm_point_offsets) - 1
+    for a0 in range(0, A, chunk):
+        a1 = min(a0 + chunk, A)
+        ao = np.asarray(arm_point_offsets[a0:a1 + 1], np.int64)
+        p0, p1 = int(ao[0]), int(ao[-1])
+        yield a0, a1, p0, p1, ao - p0
+
+
+def _points_per_frame(arm_point_offsets: np.ndarray, frame_arm_offsets: np.ndarray) -> np.ndarray:
+    """(F,) number of points in each frame (to broadcast per-frame values to points with ``np.repeat``)."""
+    return np.diff(np.asarray(arm_point_offsets)[np.asarray(frame_arm_offsets)])
+
+
+def _seg_norm(points: np.ndarray) -> np.ndarray:
+    """(P-1,) ``np.linalg.norm(np.diff(points, axis=0), axis=1)`` in the dtype of ``points``, bit-identical
+    (``sqrt(dx*dx + dy*dy)`` is what the 2-element reduction computes) without the slow short-axis reduce."""
+    if len(points) < 2:
+        return np.zeros(0, points.dtype)
+    d = np.diff(points, axis=0)
+    dx, dy = d[:, 0], d[:, 1]
+    out = dx * dx
+    out += dy * dy
+    return np.sqrt(out, out=out)
+
+
+def _targets(total: np.ndarray, k: int) -> np.ndarray:
+    """(n,k) ``np.linspace(0, total, k)`` for every ``total``, with numpy's arithmetic (step, denormal
+    branch, exact endpoint)."""
+    y = np.broadcast_to(np.arange(k, dtype=np.float64), (len(total), k)).copy()
+    div = k - 1
+    if div <= 0:
+        return y * total[:, None]
+    step = total / div
+    zero = step == 0
+    y *= step[:, None]
+    if zero.any():
+        y[zero] = (np.arange(k, dtype=np.float64) / div)[None, :] * total[zero, None]
+    y[:, -1] = total
+    return y
+
+
 # ------------------------------------------------------------------------------------ T0.2 resampling
 def resample_base(points: np.ndarray, arm_point_offsets: np.ndarray, k: int = K) -> np.ndarray:
     """T0.2 base-first resample: (A,k,2) float64, ``k`` points uniform in arc length (``np.interp``).
 
     Degenerate arms (arc length <= 0) repeat the base point. Used by arm deformation (T1.6/T3.1).
-    Source: prepare_figure_05_measures.py:75-82.
+    Source: prepare_figure_05_measures.py:75-82. Batched over arms (no per-arm loop); bit-identical to
+    the per-arm ``np.interp`` (same cumulative sums, search and interpolation formula).
     """
     A = len(arm_point_offsets) - 1
     out = np.empty((A, k, 2), np.float64)
-    for a in range(A):
-        out[a] = R.resample_arm(points[arm_point_offsets[a]:arm_point_offsets[a + 1]], k)
+    for a0, a1, p0, p1, ao in _chunks(arm_point_offsets):
+        out[a0:a1] = _resample_base_block(np.asarray(points[p0:p1], np.float64), ao, k)
+    return out
+
+
+def _resample_base_block(poly: np.ndarray, ao: np.ndarray, k: int) -> np.ndarray:
+    s, e = ao[:-1], ao[1:]
+    n = e - s
+    out = np.empty((len(s), k, 2), np.float64)
+    # arc = r_[0, cumsum(norm(diff(poly)))] per arm, in the global point layout
+    arc = np.zeros(len(poly), np.float64)
+    arc[1:] = _seg_norm(poly)
+    arc[s] = 0.0
+    _csr.seg_cumsum(arc, s, n, out=arc)
+    total = arc[e - 1]
+    deg = total <= 0
+    if deg.any():
+        out[deg] = poly[s[deg]][:, None, :]
+    idx = np.flatnonzero(~deg)
+    if not len(idx):
+        return out
+    x = _targets(total[idx], k)
+    hi = e[idx][:, None]
+    j = _csr.seg_search(arc, x, s[idx][:, None], hi, strict=False)   # largest j with arc[j] <= x
+    last = j == hi - 1
+    j1 = np.where(last, j, j + 1)
+    xj, xj1 = arc[j], arc[j1]
+    on_node = last | (xj == x)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        for d in (0, 1):
+            fj, fj1 = poly[j, d], poly[j1, d]
+            slope = (fj1 - fj) / (xj1 - xj)
+            res = slope * (x - xj) + fj
+            bad = np.isnan(res) & ~on_node
+            if bad.any():           # np.interp: "if we get nan in one direction, try the other"
+                alt = slope * (x - xj1) + fj1
+                alt = np.where(np.isnan(alt) & (fj == fj1), fj, alt)
+                res = np.where(bad, alt, res)
+            out[idx, :, d] = np.where(on_node, fj, res)
     return out
 
 
@@ -57,18 +144,54 @@ def resample_tip(points: np.ndarray, arm_point_offsets: np.ndarray, k: int = K,
     With ``arm_origin`` (A,2) the arms are made body-relative first (T0.5). The origin's dtype selects
     the arithmetic: float64 (figure scripts: ``poly - origin`` in float64) or float32 (runtime /
     Fig 6 stats: ``poly - origin.astype(float32)``). Degenerate arms (one point or length <= 1e-6)
-    repeat the tip with length 0. Source: fused_tracker.py:62-81.
+    repeat the tip with length 0. Source: fused_tracker.py:62-81. Batched over arms; bit-identical to
+    the per-arm walk (float32 cumulative length, float64 interpolation, float32 output).
     """
     A = len(arm_point_offsets) - 1
     out = np.empty((A, k, 2), np.float32)
-    lengths = np.empty(A, np.float64)
-    for a in range(A):
-        p = points[arm_point_offsets[a]:arm_point_offsets[a + 1]]
+    lengths = np.zeros(A, np.float64)
+    if arm_origin is not None:
+        arm_origin = np.asarray(arm_origin)
+    for a0, a1, p0, p1, ao in _chunks(arm_point_offsets):
+        p = points[p0:p1]
         if arm_origin is not None:
-            o = arm_origin[a]
-            p = (np.asarray(p, np.float64) - o) if o.dtype == np.float64 else (p - o)
-        out[a], lengths[a] = R.tip_anchored_resample(p, k)
+            o = np.repeat(arm_origin[a0:a1], np.diff(ao), axis=0)
+            p = (np.asarray(p, np.float64) - o) if arm_origin.dtype == np.float64 else (p - o)
+        out[a0:a1], lengths[a0:a1] = _resample_tip_block(np.asarray(p, np.float32), ao, k)
     return out, lengths
+
+
+def _resample_tip_block(p32: np.ndarray, ao: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+    s, e = ao[:-1], ao[1:]
+    n = e - s
+    A = len(s)
+    out = np.empty((A, k, 2), np.float32)
+    L = np.zeros(A, np.float64)
+    # tip first: reverse every arm in place of the global layout
+    rev = np.repeat(s + e - 1, n) - np.arange(len(p32), dtype=np.int64)
+    pts = p32[rev]
+    seg = _seg_norm(pts)
+    cum32 = np.zeros(len(pts), np.float32)
+    cum32[1:] = seg
+    cum32[s] = 0
+    _csr.seg_cumsum(cum32, s, n, out=cum32)
+    cum = cum32.astype(np.float64)
+    total = cum[e - 1]
+    deg = (n == 1) | (total <= 1e-6)
+    if deg.any():
+        out[deg] = pts[s[deg]][:, None, :]
+    idx = np.flatnonzero(~deg)
+    if not len(idx):
+        return out, L
+    T = total[idx]
+    L[idx] = T
+    d = _targets(T, k)
+    j = _csr.seg_search(cum, d, s[idx][:, None], e[idx][:, None] - 1, strict=True)   # walk: first j with d <= cum[j+1]
+    t = (d - cum[j]) / np.maximum(seg[j].astype(np.float64), 1e-6)
+    P = pts.astype(np.float64)
+    res = (1.0 - t)[..., None] * P[j] + t[..., None] * P[j + 1]
+    out[idx] = res.astype(np.float32)
+    return out, L
 
 
 # ------------------------------------------------------------------------------------ T0.3 / T1.1
@@ -79,37 +202,102 @@ def arc_length_curvature(points: np.ndarray, arm_point_offsets: np.ndarray, two_
     Arithmetic is float32 on the stored float32 points, exactly as both figure-script functions.
     ``two_point='zero'``: a 2-point arm has curvature 0.0 (``retrace_released.poly_metrics``, the export
     columns used by Fig 4); ``'nan'``: NaN (``prepare_figure_05_measures.arm_metrics``, Fig 5). A 1-point
-    arm has length 0 and curvature NaN in both.
+    arm has length 0 and curvature NaN in both. Batched over arms: segment sums use numpy's pairwise
+    order and the angle unwrap its sequential correction sum, so values are bit-identical.
     """
     if two_point not in ('zero', 'nan'):
         raise ValueError("two_point must be 'zero' or 'nan'")
-    fn = R.poly_metrics if two_point == 'zero' else R.arm_metrics
     A = len(arm_point_offsets) - 1
     length = np.empty(A, np.float64)
     curvature = np.empty(A, np.float64)
-    for a in range(A):
-        res = fn(points[arm_point_offsets[a]:arm_point_offsets[a + 1]])
-        length[a], curvature[a] = res[0], res[1]
+    for a0, a1, p0, p1, ao in _chunks(arm_point_offsets):
+        length[a0:a1], curvature[a0:a1] = _arc_curv_block(np.asarray(points[p0:p1]), ao, two_point)
     return length, curvature
+
+
+def _arc_curv_block(pts: np.ndarray, ao: np.ndarray, two_point: str) -> tuple[np.ndarray, np.ndarray]:
+    s, e = ao[:-1], ao[1:]
+    n = e - s
+    A = len(s)
+    seg = np.diff(pts, axis=0) if len(pts) > 1 else np.zeros((0, 2), pts.dtype)   # segment g: points g, g+1
+    norms = _seg_norm(pts)
+    nseg = np.maximum(n - 1, 0)
+    lsum = _csr.seg_sum(norms, s, nseg)                     # norm(segments).sum() per arm
+    length = lsum.astype(np.float64)
+    curvature = np.full(A, np.nan)
+    if two_point == 'zero':
+        curvature[n == 2] = 0.0
+    big = np.flatnonzero(n >= 3)
+    if len(big):
+        ang = np.arctan2(seg[:, 1], seg[:, 0])
+        # np.unwrap on every arm's angles at once: elementwise steps on the global diff ...
+        dd = np.diff(ang)                                   # dd[g] = ang[g+1] - ang[g], valid for g in [s, e-3]
+        period = 2 * np.pi
+        interval_high = period / 2
+        interval_low = -interval_high
+        discont = period / 2
+        with np.errstate(invalid='ignore'):
+            ddmod = np.mod(dd - interval_low, period) + interval_low
+            np.copyto(ddmod, interval_high, where=(ddmod == interval_low) & (dd > 0))
+            ph = ddmod - dd
+            np.copyto(ph, 0, where=abs(dd) < discont)
+        # ... and the sequential correction sum only on arms whose corrections are not all zero
+        sb, cb = s[big], n[big] - 2
+        nz = np.zeros(len(ph) + 1, np.int64)
+        np.cumsum(ph != 0, out=nz[1:])
+        wrap = (nz[sb + cb] - nz[sb]) > 0
+        up = ang
+        if wrap.any():
+            sw, cw = sb[wrap], cb[wrap]
+            csum = _csr.seg_cumsum(ph, sw, cw)
+            g = _ranges(sw, cw)
+            up = ang.copy()
+            up[g + 1] = ang[g + 1] + csum[g]
+        absd = np.abs(np.diff(up))
+        ksum = _csr.seg_sum(absd, sb, cb)
+        den = np.maximum(length[big], 1e-6).astype(pts.dtype)
+        curvature[big] = (ksum / den).astype(np.float64)
+    return length, curvature
+
+
+# ------------------------------------------------------------------------------------ per-container cache
+_GEOM_DEPS = ('points', 'arm_point_offsets')
+
+
+def base_shapes(c, k: int = K) -> np.ndarray:
+    """:func:`resample_base` of a container, computed once and shared (T1.6 shapes, T3.1 deformation).
+
+    Read-only; cached on the container (:meth:`PolylineContainer.derived`)."""
+    return c.derived(('resample_base', k), _GEOM_DEPS, lambda: resample_base(c.points, c.arm_point_offsets, k))
+
+
+def arm_metrics(c, two_point: str = 'zero') -> tuple[np.ndarray, np.ndarray]:
+    """:func:`arc_length_curvature` of a container (read-only, cached; shared by the T2 aggregates)."""
+    if two_point not in ('zero', 'nan'):
+        raise ValueError("two_point must be 'zero' or 'nan'")
+    return c.derived(('arc_length_curvature', two_point), _GEOM_DEPS,
+                     lambda: arc_length_curvature(c.points, c.arm_point_offsets, two_point))
 
 
 # ------------------------------------------------------------------------------------ T0.4 / T0.5
 def to_source(points: np.ndarray, arm_point_offsets: np.ndarray, frame_arm_offsets: np.ndarray,
               crop: np.ndarray) -> np.ndarray:
     """T0.4 (P,2) float64 source-video px: ``x_src = left + x * side / 512`` (retrace_released.py:579-583)."""
-    per_arm = arm_frame(frame_arm_offsets)
-    per_point = per_arm[point_arm(arm_point_offsets)]
-    c = crop[per_point]
+    ppf = _points_per_frame(arm_point_offsets, frame_arm_offsets)
+    side = np.repeat(crop[:, 2], ppf)
     out = np.asarray(points, np.float64).copy()
-    out[:, 0] = c[:, 0] + out[:, 0] * c[:, 2] / MODEL_SIZE
-    out[:, 1] = c[:, 1] + out[:, 1] * c[:, 2] / MODEL_SIZE
+    for d in (0, 1):
+        col = out[:, d]
+        col *= side
+        col /= MODEL_SIZE
+        col += np.repeat(crop[:, d], ppf)        # left + (...) == (...) + left
     return out
 
 
 def tips_source(points, arm_point_offsets, frame_arm_offsets, crop) -> np.ndarray:
     """(A,2) float64 tips in source px (the export's ``tip_source_x/y``)."""
     tips = np.asarray(arm_tips(points, arm_point_offsets), np.float64)
-    c = crop[arm_frame(frame_arm_offsets)]
+    c = np.repeat(crop, np.diff(frame_arm_offsets), axis=0)
     out = tips.copy()
     out[:, 0] = c[:, 0] + tips[:, 0] * c[:, 2] / MODEL_SIZE
     out[:, 1] = c[:, 1] + tips[:, 1] * c[:, 2] / MODEL_SIZE
@@ -127,8 +315,10 @@ def origin_source(origin_model: np.ndarray, crop: np.ndarray) -> np.ndarray:
 def body_relative(points: np.ndarray, arm_point_offsets: np.ndarray, frame_arm_offsets: np.ndarray,
                   origin: np.ndarray) -> np.ndarray:
     """T0.5 (P,2) float64 ``P - body_origin_model[frame]`` (crop px)."""
-    per_point = arm_frame(frame_arm_offsets)[point_arm(arm_point_offsets)]
-    return np.asarray(points, np.float64) - origin[per_point]
+    o = np.repeat(np.asarray(origin, np.float64), _points_per_frame(arm_point_offsets, frame_arm_offsets), axis=0)
+    out = np.asarray(points, np.float64).copy()
+    out -= o
+    return out
 
 
 # ------------------------------------------------------------------------------------ T1.2 - T1.6
@@ -178,10 +368,10 @@ def body_path(points: np.ndarray, arm_point_offsets: np.ndarray, frame_arm_offse
     ``((x - cx) / r, (cy - y) / r)`` with the per-frame model radius r; ``decimals=3`` reproduces the JSON.
     Source: prepare_figure_04.py:116-127.
     """
-    per_point = arm_frame(frame_arm_offsets)[point_arm(arm_point_offsets)]
+    ppf = _points_per_frame(arm_point_offsets, frame_arm_offsets)
     p = np.asarray(points, np.float64)
-    o = origin[per_point]
-    r = radius_model[per_point]
+    o = np.repeat(origin, ppf, axis=0)
+    r = np.repeat(radius_model, ppf)
     xy = np.column_stack(((p[:, 0] - o[:, 0]) / r, (o[:, 1] - p[:, 1]) / r))
     return xy if decimals is None else np.round(xy, decimals)
 

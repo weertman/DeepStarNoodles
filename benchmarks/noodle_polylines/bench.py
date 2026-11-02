@@ -16,7 +16,8 @@ Inputs (any combination):
 
 Each (input, kernel) job runs in a fresh single-threaded process (``max_tasks_per_child=1``; BLAS threads
 pinned to 1): ``--warmup`` untimed calls, then the best of ``--repeats`` timed runs (``--synthetic-repeats``
-for the synthetic input). ``--jobs`` > 1 runs jobs concurrently, which inflates timings through
+for the synthetic input). The container's derived-array cache is cleared before every call, so each
+timing is cold (a kernel never reuses resamples from an earlier repeat). ``--jobs`` > 1 runs jobs concurrently, which inflates timings through
 contention; use ``--jobs 1`` for numbers you report. Memory: RSS after building the input, and the
 kernel's own peak (VmHWM reset after the build via /proc/self/clear_refs on Linux).
 Metrics: arms/s and frames/s of the input set; the projection multiplies the per-arm CPU time by
@@ -112,6 +113,13 @@ def describe(cs: list[PolylineContainer]) -> dict:
 
 
 # ------------------------------------------------------------------------------------------ kernels
+def _cold(c) -> None:
+    """Drop the container's derived-array cache so every timed call pays for its own resamples."""
+    clear = getattr(c, 'clear_cache', None)
+    if clear is not None:
+        clear()
+
+
 def _ids(c):
     return c.track_id if c.has_track_id() else TR.relink(c)
 
@@ -193,11 +201,13 @@ def run_kernel(spec: dict, kernel: str, repeats: int, warmup: int = 1) -> dict:
     reset = _reset_peak_rss()
     for _ in range(warmup):
         for c in cs:
+            _cold(c)
             fn(c)
     walls, cpus = [], []
     for _ in range(repeats):
         t0, c0 = time.perf_counter(), time.process_time()
         for c in cs:
+            _cold(c)
             fn(c)
         walls.append(time.perf_counter() - t0)
         cpus.append(time.process_time() - c0)
@@ -243,6 +253,7 @@ def profile(spec: dict, top: int = 25) -> str:
     pr = cProfile.Profile()
     pr.enable()
     for c in cs:
+        _cold(c)
         _fig5(c)
         TR.relink(c)
     pr.disable()

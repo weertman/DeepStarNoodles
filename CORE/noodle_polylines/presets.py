@@ -130,8 +130,8 @@ def compute_all(c: PolylineContainer, preset: str | Preset = 'fig5', *, r0=None,
     c.require('crop')
     out: dict[str, np.ndarray] = {'preset': np.array(p.name)}
     pts, ao, fo = c.points, c.arm_point_offsets, c.frame_arm_offsets
-    L, kappa = G.arc_length_curvature(pts, ao, two_point=p.two_point)
-    out['arc_length'], out['curvature'] = L, kappa
+    L, kappa = G.arm_metrics(c, two_point=p.two_point)          # cached on c, shared with T2
+    out['arc_length'], out['curvature'] = L.copy(), kappa.copy()
     out['tip_source'] = G.tips_source(pts, ao, fo, c.crop)
     out['n_arms'] = FR.n_arms(c)
     if c.support_area_model_px is not None:
@@ -144,7 +144,7 @@ def compute_all(c: PolylineContainer, preset: str | Preset = 'fig5', *, r0=None,
             out['tip_isotropy_window'] = np.array(FR.window_median(iso, c.times() - onset_s, isotropy_window,
                                                                   p.isotropy_fallback))
     if shapes:
-        out['resample_base'] = G.resample_base(pts, ao)
+        out['resample_base'] = G.base_shapes(c)                   # read-only, cached on c
     if c.body_origin_model is None:
         return out
     angle, radius = G.tip_polar(pts, ao, fo, c.body_origin_model, p.tip_origin_dtype, p.tip_angle_dtype)
@@ -175,7 +175,7 @@ def compute_all(c: PolylineContainer, preset: str | Preset = 'fig5', *, r0=None,
     out['arm_length_spread'] = FR.arm_length_spread(c, r.r0, p.variant, arc_length=L)
     out['arm_curvature'] = FR.arm_curvature(c, r.r0, p.variant, curvature=kappa, reducer=p.curvature_reducer)
     if ids is not None:
-        base = G.resample_base(pts, ao) if 'resample_base' not in out else out['resample_base']
+        base = G.base_shapes(c)
         if p.deformation_window is not None and windows is not None:
             d, d_win = _window_deformation(c, r.r0, ids, p, windows, base)
             out['arm_deformation_window'] = d_win
