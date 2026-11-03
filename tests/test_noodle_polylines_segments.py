@@ -29,6 +29,15 @@ def same(a, b):
     assert np.array_equal(a, b, equal_nan=True), np.nanmax(np.abs(a.astype(float) - b.astype(float)))
 
 
+def close(a, b, rtol=1e-9):
+    """The closed-form Kabsch default: NaN/inf positions exact, finite values within the gate's rtol 1e-9."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    assert a.shape == b.shape, (a.shape, b.shape)
+    fa, fb = np.isfinite(a), np.isfinite(b)
+    assert np.array_equal(fa, fb) and np.array_equal(a[~fa], b[~fb], equal_nan=True)
+    assert np.all(np.abs(a[fa] - b[fb]) <= rtol * np.abs(b[fb])), np.max(np.abs(a[fa] - b[fb]) / np.abs(b[fb]))
+
+
 # ------------------------------------------------------------------------------------------ inputs
 def _container(seed: int = 3, F: int = 400):
     rng = np.random.default_rng(seed)
@@ -289,7 +298,44 @@ def test_rigid_residuals_match_reference():
     b = a[:, ::-1] + rng.normal(0, 1e-3, a.shape)
     b[::3] = rng.normal(0, 1, b[::3].shape)
     a[::5] = a[::5, :1]                      # all points equal
-    same(KI.rigid_residuals(a, b, block=1000), [R.rigid_residual(x, y) for x, y in zip(a, b)])
+    ref = [R.rigid_residual(x, y) for x, y in zip(a, b)]
+    same(KI.rigid_residuals(a, b, block=1000, kabsch='svd'), ref)
+    got = KI.rigid_residuals(a, b, block=1000)              # closed form: spec bound 1e-10 abs vs the SVD
+    assert np.max(np.abs(got - ref)) <= 1e-10
+    close(got[np.asarray(ref) > 1e-6], np.asarray(ref)[np.asarray(ref) > 1e-6])
+
+
+def test_closed_kabsch_reflection_and_degenerate_cases():
+    """Closed form vs the scripts' SVD (with its sign(det) guard) where the guard bites: mirrored shapes,
+    collinear (rank-1) shapes, a single repeated point on either side, exact rotations, and huge offsets."""
+    rng = np.random.default_rng(11)
+    n = 4000
+    a = rng.normal(0, 1, (n, 12, 2))
+    th = rng.uniform(-np.pi, np.pi, n)
+    rot = np.stack([np.stack([np.cos(th), np.sin(th)], -1), np.stack([-np.sin(th), np.cos(th)], -1)], 1)
+    b = np.matmul(a, rot) + rng.normal(0, 1e-2, a.shape)
+    b[0::7, :, 0] *= -1                                     # mirror images: det(H) < 0, the guard flips
+    line = np.linspace(-1, 1, 12)[None, :, None] * rng.normal(0, 1, (n, 1, 2))
+    a[1::7] = line[1::7]                                    # collinear arms (rank-1 cross-covariance)
+    b[2::7] = line[2::7] * -1.0
+    a[3::7] = a[3::7, :1]                                   # all points equal (zero cross-covariance)
+    b[4::7] = b[4::7, :1]
+    b[5::7] = np.matmul(a[5::7], rot[5::7])                 # exact rotation (residual ~0)
+    a[6::7] += 1e6                                          # large offsets (centring)
+    ref = np.array([R.rigid_residual(x, y) for x, y in zip(a, b)])
+    got = KI.rigid_residuals(a, b, block=999)
+    assert np.max(np.abs(got - ref)) <= 1e-10
+    big = ref > 1e-3
+    close(got[big], ref[big], rtol=1e-9)
+    for bad in (np.nan, np.inf):                            # non-finite shapes raise like the scripts' SVD
+        z = a[:10].copy()
+        z[3, 4, 1] = bad
+        with pytest.raises(np.linalg.LinAlgError):
+            R.rigid_residual(z[3], b[3])
+        with pytest.raises(np.linalg.LinAlgError):
+            KI.rigid_residuals(z, b[:10])
+    with pytest.raises(ValueError):
+        KI.rigid_residuals(a, b, kabsch='qr')
 
 
 @pytest.mark.parametrize('lag', KI.LAGS)
@@ -298,13 +344,17 @@ def test_deformation_matches_per_frame_dict_loop(c, lag):
     t = c.times()
     for r0 in _r0s(c.n_frames, finite=True):
         for order in ('fig4', 'fig5'):
-            same(KI.arm_deformation(c, r0, tid, lag=lag, shape_order=order), _slow_deformation(c, r0, tid, lag, order))
+            slow = _slow_deformation(c, r0, tid, lag, order)
+            same(KI.arm_deformation(c, r0, tid, lag=lag, shape_order=order, kabsch='svd'), slow)
+            close(KI.arm_deformation(c, r0, tid, lag=lag, shape_order=order), slow)
         mask = (t > t[40]) & (t < t[300])
-        same(KI.arm_deformation(c, r0, tid, lag=lag, shape_order='fig4', shape_mask=mask),
-             _slow_deformation(c, r0, tid, lag, 'fig4', mask))
+        slow = _slow_deformation(c, r0, tid, lag, 'fig4', mask)
+        same(KI.arm_deformation(c, r0, tid, lag=lag, shape_order='fig4', shape_mask=mask, kabsch='svd'), slow)
+        close(KI.arm_deformation(c, r0, tid, lag=lag, shape_order='fig4', shape_mask=mask), slow)
     # a NaN R0 on a linked frame makes the scripts' SVD fail; the batched path fails the same way
     bad = _r0s(c.n_frames)[1]
-    for fn in (lambda: KI.arm_deformation(c, bad, tid, lag=lag), lambda: _slow_deformation(c, bad, tid, lag, 'fig5')):
+    for fn in (lambda: KI.arm_deformation(c, bad, tid, lag=lag), lambda: _slow_deformation(c, bad, tid, lag, 'fig5'),
+               lambda: KI.arm_deformation(c, bad, tid, lag=lag, kabsch='svd')):
         with pytest.raises(np.linalg.LinAlgError):
             fn()
 
@@ -322,7 +372,8 @@ def test_window_deformation_matches_whole_sequence_runs(c):
     windows = [(t[50], t[80]), (t[70], t[120]), (t[390], t[399] + 50), (t[200], t[199])]
     base = G.resample_base(c.points, c.arm_point_offsets)
     context, lookback = FIG4D.deformation_window
-    first, per = _window_deformation(c, 41.0, c.track_id, FIG4D, windows, base)
+    first, per = _window_deformation(c, 41.0, c.track_id, FIG4D, windows, base, kabsch='svd')
+    first_c, per_c = _window_deformation(c, 41.0, c.track_id, FIG4D, windows, None)   # closed, lazy resample
     taken = np.zeros(c.n_frames, bool)
     ref_first = np.full(c.n_frames, np.nan)
     for k, (start, stop) in enumerate(windows):
@@ -331,13 +382,75 @@ def test_window_deformation_matches_whole_sequence_runs(c):
                               (t >= lo - lookback) & (t <= hi))
         inside = (t >= lo) & (t <= hi)
         same(per[k][inside], d[inside])
+        close(per_c[k][inside], d[inside])
         assert np.all(np.isnan(per[k][~inside]))
         ref_first[inside & ~taken] = d[inside & ~taken]
         taken |= inside
     same(first, ref_first)
     c2 = c.with_fields(track_id=np.maximum(c.track_id, 0))        # stored IDs: compute_all uses them
-    out = compute_all(c2, 'fig4d', windows=windows)
-    first2, per2 = _window_deformation(c2, out['r0'], c2.track_id, FIG4D, windows, base)
-    same(out['arm_deformation_window'], per2)
-    same(out['arm_deformation'], first2)
-    same(out['log_deformation'], np.log10(np.maximum(first2, FIG4D.log10_floor)))
+    for kabsch in ('svd', 'closed'):
+        out = compute_all(c2, 'fig4d', windows=windows, kabsch=kabsch)
+        first2, per2 = _window_deformation(c2, out['r0'], c2.track_id, FIG4D, windows, base, kabsch=kabsch)
+        same(out['arm_deformation_window'], per2)
+        same(out['arm_deformation'], first2)
+        same(out['log_deformation'], np.log10(np.maximum(first2, FIG4D.log10_floor)))
+
+
+# ------------------------------------------------------------------------------------------ T3 round 4
+@pytest.mark.parametrize('kabsch', KI.KABSCH)
+@pytest.mark.parametrize('lag', KI.LAGS)
+def test_requested_frames_equal_whole_sequence(c, lag, kabsch):
+    """``frames=`` computes only the requested output frames; their values equal the whole-sequence run's
+    (the lag reference may lie outside the request), the rest are NaN."""
+    tid = c.track_id
+    whole = KI.arm_deformation(c, 41.0, tid, lag=lag, kabsch=kabsch)
+    motion = KI.tip_motion(c, 41.0, tid)
+    rng = np.random.default_rng(2)
+    for want in ((np.arange(c.n_frames) >= 120) & (np.arange(c.n_frames) < 160), rng.random(c.n_frames) < 0.1,
+                 np.array([0, 5, 6, 7, 399]), np.zeros(c.n_frames, bool)):
+        m = np.zeros(c.n_frames, bool)
+        m[want] = True
+        exp = np.where(m, whole, np.nan)
+        same(KI.arm_deformation(c, 41.0, tid, lag=lag, kabsch=kabsch, frames=want), exp)
+        if lag == 'last_arm_frame':
+            same(KI.tip_motion(c, 41.0, tid, frames=want), np.where(m, motion, np.nan))
+    with pytest.raises(ValueError):
+        KI.arm_deformation(c, 41.0, tid, frames=np.ones(3, bool))
+    with pytest.raises(ValueError):
+        KI.arm_deformation(c, 41.0, tid, kabsch='qr')
+
+
+def test_subset_resample_and_base_sources_agree(c):
+    """Resampling only the linked arms gives the rows of a whole-container resample, bit for bit; a given
+    ``base``, a caching scope and the lazy path give the same deformation."""
+    base = G.resample_base(c.points, c.arm_point_offsets)
+    arms = np.flatnonzero(np.random.default_rng(4).random(c.n_arms) < 0.3)
+    same(KI._base_rows(c, arms, None), base[arms])
+    same(KI._base_rows(c, np.arange(c.n_arms), None), base)
+    same(KI._base_rows(c, arms[:0], None), base[:0])
+    for kabsch in KI.KABSCH:
+        lazy = KI.arm_deformation(c, 41.0, c.track_id, kabsch=kabsch)
+        same(KI.arm_deformation(c, 41.0, c.track_id, kabsch=kabsch, base=base), lazy)
+        with c.caching():
+            same(KI.arm_deformation(c, 41.0, c.track_id, kabsch=kabsch), lazy)
+
+
+def test_pair_blocks_and_shared_pairs(c, monkeypatch):
+    """Small pair and closed-form blocks give the same values; compute_all shares the lag-B links with tip
+    motion and gives the separate calls' values."""
+    tid = c.track_id
+    ref = {k: KI.arm_deformation(c, 41.0, tid, kabsch=k) for k in KI.KABSCH}
+    ref_a = KI.arm_deformation(c, 41.0, tid, lag='prev_frame_reset')
+    monkeypatch.setattr(KI, '_PAIR_BLOCK', 37)
+    monkeypatch.setattr(KI, '_CLOSED_BLOCK', 5)
+    for k in KI.KABSCH:
+        same(KI.arm_deformation(c, 41.0, tid, kabsch=k), ref[k])
+    same(KI.arm_deformation(c, 41.0, tid, lag='prev_frame_reset'), ref_a)
+    monkeypatch.undo()
+    pairs = KI.last_arm_frame_pairs(c, tid)
+    same(KI.arm_deformation(c, 41.0, tid, _pairs=pairs), ref['closed'])
+    c2 = c.with_fields(track_id=np.maximum(tid, 0))               # stored IDs: compute_all uses them
+    out = compute_all(c2, 'fig5', r0=41.0)
+    same(out['arm_deformation'], KI.arm_deformation(c2, 41.0))
+    same(out['tip_motion'], KI.tip_motion(c2, 41.0))
+    assert 'resample_base' not in out

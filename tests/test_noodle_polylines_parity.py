@@ -24,6 +24,15 @@ def same(a, b):
     assert np.array_equal(a, b, equal_nan=a.dtype.kind == 'f'), np.nanmax(np.abs(a.astype(float) - b.astype(float)))
 
 
+def close(a, b, rtol=1e-9):
+    """The closed-form Kabsch default: NaN/inf positions exact, finite values within the gate's rtol 1e-9."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    assert a.shape == b.shape, (a.shape, b.shape)
+    fa, fb = np.isfinite(a), np.isfinite(b)
+    assert np.array_equal(fa, fb) and np.array_equal(a[~fa], b[~fb], equal_nan=True)
+    assert np.all(np.abs(a[fa] - b[fb]) <= rtol * np.abs(b[fb])), np.max(np.abs(a[fa] - b[fb]) / np.abs(b[fb]))
+
+
 @pytest.fixture(scope='module')
 def c():
     return PolylineContainer.load(EXAMPLE, sidecar=True)
@@ -219,10 +228,11 @@ def test_fig4e_equals_reference_and_fixture(c, fx, tables, relink_ids):
         got = {'fold_asymmetry': FR.fold_asymmetry(c, res.r0, 'fig4e'),
                'arm_length_spread': FR.arm_length_spread(c, res.r0, 'fig4e'),
                'arm_curvature': FR.arm_curvature(c, res.r0, 'fig4e'),
-               'arm_deformation': KI.arm_deformation(c, res.r0, relink_ids, lag='prev_frame_reset')}
+               'arm_deformation': KI.arm_deformation(c, res.r0, relink_ids, lag='prev_frame_reset', kabsch='svd')}
         for name, v in got.items():
             same(v[win], np.asarray(ref['columns'][name]))
             same(v[win], fr[f'fig4e_{name}'][sel])
+        close(KI.arm_deformation(c, res.r0, relink_ids, lag='prev_frame_reset')[win], fr['fig4e_arm_deformation'][sel])
 
 
 def test_fig4d_equals_reference_and_fixture(c, fx, tables, relink_ids):
@@ -233,7 +243,8 @@ def test_fig4d_equals_reference_and_fixture(c, fx, tables, relink_ids):
     ref = R.fig4d_clip(rows, arms, polys, track_of, bouts)
     res = SC.r0_outside_windows(c, [(b['start_s'], b['stop_s']) for b in bouts])
     assert res.r0 == ref['r0'] == meta['fig4d_r0'] and res.area0 == ref['area0'] == meta['fig4d_area0']
-    out = compute_all(c, 'fig4d', windows=[(b['start_s'], b['stop_s']) for b in bouts], track='relink')
+    out = compute_all(c, 'fig4d', windows=[(b['start_s'], b['stop_s']) for b in bouts], track='relink', kabsch='svd')
+    out_c = compute_all(c, 'fig4d', windows=[(b['start_s'], b['stop_s']) for b in bouts], track='relink')
     t = c.times()
     for i, b in enumerate(bouts):
         lo, hi = b['start_s'] - 2, b['stop_s'] + 2
@@ -243,12 +254,14 @@ def test_fig4d_equals_reference_and_fixture(c, fx, tables, relink_ids):
         for name in ('fold_asymmetry', 'arm_length_spread', 'arm_curvature'):
             same(out[name][win], np.asarray(ref['columns'][name])[sel])
             same(out[name][win], fr[f'fig4d_{name}'][fsel])
-        d = KI.arm_deformation(c, res.r0, relink_ids, lag='prev_frame_reset', shape_mask=(t >= lo - 1) & (t <= hi))
+        d = KI.arm_deformation(c, res.r0, relink_ids, lag='prev_frame_reset', shape_mask=(t >= lo - 1) & (t <= hi),
+                               kabsch='svd')
         logd = np.array([np.nan if not np.isfinite(x) else float(np.log10(max(float(x), 1e-3))) for x in d])
         same(logd[win], np.asarray(ref['columns']['log_deformation'])[sel])
         same(logd[win], fr['fig4d_log_deformation'][fsel])
         same(out['log_deformation'][win], fr['fig4d_log_deformation'][fsel])
         same(out['log_deformation_window'][i][win], fr['fig4d_log_deformation'][fsel])
+        close(out_c['log_deformation'][win], fr['fig4d_log_deformation'][fsel])
 
 
 def test_fig5_definitions_equal_reference_and_fixture(c, fx, relink_ids):
@@ -257,10 +270,14 @@ def test_fig5_definitions_equal_reference_and_fixture(c, fx, relink_ids):
     for tag, r0 in meta['fig5_r0'].items():
         ref = R.fig5_window(frames, 331.0, r0=r0, area0=1.0)
         same(relink_ids, np.concatenate([np.asarray(x, np.int64) for x in ref['labels']]))
-        out = compute_all(c, 'fig5', r0=r0, track='relink')
+        out = compute_all(c, 'fig5', r0=r0, track='relink', kabsch='svd')
         for name in ('fold_asymmetry', 'arm_length_spread', 'arm_curvature', 'tip_motion', 'arm_deformation'):
             same(out[name], np.asarray(ref['rows'][name]))
             same(out[name], fr[f'fig5_{tag}_{name}'])
+        out_c = compute_all(c, 'fig5', r0=r0, track='relink')
+        close(out_c['arm_deformation'], fr[f'fig5_{tag}_arm_deformation'])
+        for name in ('fold_asymmetry', 'arm_length_spread', 'arm_curvature', 'tip_motion'):
+            same(out_c[name], out[name])
 
 
 def test_fig5_baseline_drop_and_r0(c):
@@ -277,9 +294,12 @@ def test_fig5_baseline_drop_and_r0(c):
 def test_lag_variants_reference(c, relink_ids):
     """Lag A (Fig 4) and lag B (Fig 5) agree on a gap-free clip; lag A resets after a frame without arms."""
     r0 = 50.0
-    a = KI.arm_deformation(c, r0, relink_ids, lag='prev_frame_reset')
-    b = KI.arm_deformation(c, r0, relink_ids, lag='last_arm_frame', shape_order='fig4')
+    a = KI.arm_deformation(c, r0, relink_ids, lag='prev_frame_reset', kabsch='svd')
+    b = KI.arm_deformation(c, r0, relink_ids, lag='last_arm_frame', shape_order='fig4', kabsch='svd')
     same(a, b)
+    same(KI.arm_deformation(c, r0, relink_ids, lag='prev_frame_reset'),
+         KI.arm_deformation(c, r0, relink_ids, lag='last_arm_frame', shape_order='fig4'))
+    close(KI.arm_deformation(c, r0, relink_ids, lag='prev_frame_reset'), a)
     frames = [{'time_s': float(c.time_s[f]), 'has_star': bool(c.has_star[f]),
                'arms': [(int(relink_ids[x]), np.asarray(c.arm(x), float), float(c.crop[f, 2])) for x in c.frame_arms(f)]}
               for f in range(c.n_frames)]

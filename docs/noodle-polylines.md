@@ -135,7 +135,7 @@ R0 is in source px.
 
 | ID | Level | Trk | Function | Definition | Units | Panels |
 |---|---|---|---|---|---|---|
-| T3.1 | F | yes | `kinematics.arm_deformation(lag=…)` | median over linked arms of the Kabsch RMS residual of T1.6 / dt. `last_arm_frame` (default, Fig 5) bridges gaps; `prev_frame_reset` (Fig 4) resets after a frame with no star or no arms | R0/s | 4D (as log10 with floor 1e-3), 4E, 5B, 5C |
+| T3.1 | F | yes | `kinematics.arm_deformation(lag=…, kabsch=…)` | median over linked arms of the Kabsch RMS residual of T1.6 / dt (closed-form rotation by default, `kabsch='svd'` bit-identical to the scripts). `last_arm_frame` (default, Fig 5) bridges gaps; `prev_frame_reset` (Fig 4) resets after a frame with no star or no arms | R0/s | 4D (as log10 with floor 1e-3), 4E, 5B, 5C |
 | T3.2 | F | yes | `kinematics.tip_motion` | median ‖Δ((tip − origin)·scale/R0)‖ / dt over arms whose track was present in the last arm-bearing frame | R0/s | 5B, 5C |
 | T3.3 | A | yes | `kinematics.tip_angle_track` | T1.3 with time and `track_id`; by default float32 origin and angles for flipping (6C), float64 otherwise (6B) | deg | 6B, 6C |
 
@@ -234,12 +234,24 @@ The per-arm kernels (`resample_base`, `resample_tip`, `arc_length_curvature`) wo
 CSR array at once, in blocks of 8,192 arms, and give bit-identical results to the per-arm script code.
 The per-frame aggregates (T2) and the tracked kinematics (T3.1, T3.2) are batched over frames in the
 same way. Each frame's median, nanmedian or percentile is taken from a segmented sort. Tip means are
-summed row by row, as `ndarray.mean(0)` does. Covariances and the Kabsch fit run as stacked `matmul`
-and LAPACK calls (`eigvalsh`, `svd`, `det`), which apply the same kernel to every slice. The track
-joins of T3 are sorted-key lookups, which reproduce the scripts' per-frame dicts (the last arm of a
-track in a frame wins). The results are bit-identical to the per-frame loops. A closed-form 2×2
-eigen solve or Kabsch fit would be a little faster, but it differs from LAPACK in the last bits, so
-neither is used. Fig 4D runs each bout window on its own frame span, not on the whole sequence.
+summed row by row, as `ndarray.mean(0)` does. Covariances run as stacked `matmul` and LAPACK
+`eigvalsh` calls, which apply the same kernel to every slice. The track joins of T3 are sorted-key
+lookups, which reproduce the scripts' per-frame dicts (the last arm of a track in a frame wins).
+Apart from the T3.1 rigid fit, the results are bit-identical to the per-frame loops (a closed-form
+2×2 eigen solve differs from LAPACK in the last bits, so it is not used).
+
+The T3.1 rigid fit is the one exception, and it can be switched. By default (`kabsch='closed'`)
+the 2-D Kabsch rotation is solved in closed form: for centred shapes, the best proper rotation has
+`θ = atan2(Σ(x_a y_b − y_a x_b), Σ(x_a x_b + y_a y_b))`. That is the rotation the scripts' SVD with
+its `sign(det)` reflection guard finds, but it needs about a quarter of the time. Over the 1.9M linked
+pairs of the released corpora it agrees with the SVD to 2e-15 absolute and 5.7e-12 relative at
+worst; the per-frame deformations agree to 8e-14 relative, with identical NaN positions. A block with
+a non-finite shape runs the SVD, which raises `LinAlgError` as the scripts do. `kabsch='svd'`
+(also on `compute_all`) evaluates the scripts' SVD expression on stacked pairs and is bit-identical
+to them. Each linked arm's shape is built and centred once, and only linked arms are resampled.
+`arm_deformation(frames=…)` and `tip_motion(frames=…)` compute only the requested output frames (the
+lag reference may lie outside them), and Fig 4D runs each bout window on its own frame span, not
+on the whole sequence. `compute_all` joins the lag-B links once for deformation and tip motion.
 No call keeps derived arrays on a container, so memory is bounded by the call (`compute_all` shares
 its resamples internally and frees them on return). To share them across several calls, open a
 caching scope:

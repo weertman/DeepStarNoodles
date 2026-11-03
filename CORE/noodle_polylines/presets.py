@@ -87,8 +87,8 @@ def resolve_r0(c: PolylineContainer, preset: Preset, r0=None, bout=None, windows
     return SC.r0(c, preset.r0_policy, bout=bout, windows=windows, onset_s=onset_s)
 
 
-def _window_deformation(c: PolylineContainer, r0, ids: np.ndarray, p: Preset, windows, base: np.ndarray
-                        ) -> tuple[np.ndarray, np.ndarray]:
+def _window_deformation(c: PolylineContainer, r0, ids: np.ndarray, p: Preset, windows, base: np.ndarray | None,
+                        kabsch: str = 'closed') -> tuple[np.ndarray, np.ndarray]:
     """Fig 4D deformation, one run per bout window: (F,) first window containing each frame (NaN outside
     every window) and (W, F) per window (NaN outside that window)."""
     context, lookback = p.deformation_window
@@ -108,12 +108,14 @@ def _window_deformation(c: PolylineContainer, r0, ids: np.ndarray, p: Preset, wi
             continue
         # Frames outside the shape mask contribute no shapes, so they only reset or skip the lag
         # reference: the deformation inside the window depends on the masked frame span alone, and
-        # running on that span gives the same values as a whole-sequence run (O(span), not O(F)).
+        # running on that span gives the same values as a whole-sequence run (O(span), not O(F)). Only
+        # the span's linked arms are resampled (unless ``base`` was computed for every arm already).
         f0, f1 = int(pos[0]), int(pos[-1]) + 1
         a0, a1 = int(fo[f0]), int(fo[f1])
         sub = c.select_frames(slice(f0, f1))
         d_sub = KI.arm_deformation(sub, r0[f0:f1] if r0.ndim else r0, ids[a0:a1], lag=p.deformation_lag,
-                                   shape_order=p.shape_order, shape_mask=mask[f0:f1], base=base[a0:a1])
+                                   shape_order=p.shape_order, shape_mask=mask[f0:f1],
+                                   base=None if base is None else base[a0:a1], kabsch=kabsch)
         d = np.full(c.n_frames, np.nan)
         d[f0:f1] = d_sub
         per[k, inside] = d[inside]
@@ -125,7 +127,8 @@ def _window_deformation(c: PolylineContainer, r0, ids: np.ndarray, p: Preset, wi
 
 def compute_all(c: PolylineContainer, preset: str | Preset = 'fig5', *, r0=None, bout=None, windows=None,
                 onset_s=None, track: str = 'auto', config: TR.TrackerConfig = TR.RELEASED,
-                shapes: bool = False, isotropy_window=(-300.0, -60.0)) -> dict[str, np.ndarray]:
+                shapes: bool = False, isotropy_window=(-300.0, -60.0), kabsch: str = 'closed'
+                ) -> dict[str, np.ndarray]:
     """Every representation of the preset's panel on one container, as a dict of named arrays.
 
     Keys ending in nothing are per arm (A,) / per point (P,) / per frame (F,) as documented in
@@ -139,6 +142,9 @@ def compute_all(c: PolylineContainer, preset: str | Preset = 'fig5', *, r0=None,
     ``arm_deformation_window`` / ``log_deformation_window`` (W, F) hold each bout's values (NaN outside
     its window); ``arm_deformation`` / ``log_deformation`` (F,) take the first window containing the
     frame and are NaN outside every window.
+
+    ``kabsch``: the T3.1 rigid fit, 'closed' (default) or 'svd' (bit-identical to the figure scripts);
+    see :mod:`noodle_polylines.kinematics`.
     """
     p = get(preset)
     c.require('crop')
@@ -191,17 +197,20 @@ def compute_all(c: PolylineContainer, preset: str | Preset = 'fig5', *, r0=None,
     out['arm_length_spread'] = FR.arm_length_spread(c, r.r0, p.variant, arc_length=L)
     out['arm_curvature'] = FR.arm_curvature(c, r.r0, p.variant, curvature=kappa, reducer=p.curvature_reducer)
     if ids is not None:
-        if base is None:
-            base = G.base_shapes(c)
+        # base shapes only for the arms the deformation links (all arms only if ``shapes=True`` asked)
+        pairs = None
         if p.deformation_window is not None and windows is not None:
-            d, d_win = _window_deformation(c, r.r0, ids, p, windows, base)
+            d, d_win = _window_deformation(c, r.r0, ids, p, windows, base, kabsch)
             out['arm_deformation_window'] = d_win
             if p.log10_floor is not None:
                 out['log_deformation_window'] = np.log10(np.maximum(d_win, p.log10_floor))
         else:
-            d = KI.arm_deformation(c, r.r0, ids, lag=p.deformation_lag, shape_order=p.shape_order, base=base)
+            # lag B and tip motion link the same arms: join once
+            pairs = KI.last_arm_frame_pairs(c, ids) if p.deformation_lag == 'last_arm_frame' else None
+            d = KI.arm_deformation(c, r.r0, ids, lag=p.deformation_lag, shape_order=p.shape_order, base=base,
+                                   kabsch=kabsch, _pairs=pairs)
         out['arm_deformation'] = d
         if p.log10_floor is not None:
             out['log_deformation'] = np.log10(np.maximum(d, p.log10_floor))
-        out['tip_motion'] = KI.tip_motion(c, r.r0, ids)
+        out['tip_motion'] = KI.tip_motion(c, r.r0, ids, _pairs=pairs)
     return out

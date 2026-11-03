@@ -67,7 +67,8 @@ def test_fig4d_deformation_is_per_bout_window(c):
     rows, arms, polys = R.flip_tables(g)
     ids = TR.relink(g)
     ref = R.fig4d_clip(rows, arms, polys, {a: int(i) for a, i in enumerate(ids)}, bouts)
-    out = compute_all(g, 'fig4d', windows=[(b['start_s'], b['stop_s']) for b in bouts], track='relink')
+    out = compute_all(g, 'fig4d', windows=[(b['start_s'], b['stop_s']) for b in bouts], track='relink', kabsch='svd')
+    out_c = compute_all(g, 'fig4d', windows=[(b['start_s'], b['stop_s']) for b in bouts], track='relink')
     same(out['track_id'], ids)
     tg = g.times()
     assert out['log_deformation_window'].shape == (len(bouts), g.n_frames)
@@ -77,8 +78,11 @@ def test_fig4d_deformation_is_per_bout_window(c):
         same(out['log_deformation'][win], np.asarray(ref['columns']['log_deformation'])[sel])
         same(out['log_deformation_window'][i][win], np.asarray(ref['columns']['log_deformation'])[sel])
         assert np.all(np.isnan(out['log_deformation_window'][i][~win]))
+        ld, lr = out_c['log_deformation'][win], np.asarray(ref['columns']['log_deformation'])[sel]
+        fin = np.isfinite(lr)                 # closed-form Kabsch: same NaNs, values within rtol 1e-9
+        assert np.array_equal(np.isfinite(ld), fin) and np.all(np.abs(ld[fin] - lr[fin]) <= 1e-9 * np.abs(lr[fin]))
     first = np.flatnonzero(tg >= lo)[0]
-    assert np.isnan(out['log_deformation'][first])
+    assert np.isnan(out['log_deformation'][first]) and np.isnan(out_c['log_deformation'][first])
     whole = KI.arm_deformation(g, float(out['r0']), ids, lag='prev_frame_reset')
     assert np.isfinite(whole[first])            # the old whole-sequence value the preset used to return
 

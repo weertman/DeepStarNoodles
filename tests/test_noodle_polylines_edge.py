@@ -20,6 +20,15 @@ def same(a, b):
     assert np.array_equal(a, b, equal_nan=a.dtype.kind == 'f')
 
 
+def close(a, b, rtol=1e-9):
+    """The closed-form Kabsch default: NaN/inf positions exact, finite values within the gate's rtol 1e-9."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    assert a.shape == b.shape, (a.shape, b.shape)
+    fa, fb = np.isfinite(a), np.isfinite(b)
+    assert np.array_equal(fa, fb) and np.array_equal(a[~fa], b[~fb], equal_nan=True)
+    assert np.all(np.abs(a[fa] - b[fb]) <= rtol * np.abs(b[fb])), np.max(np.abs(a[fa] - b[fb]) / np.abs(b[fb]))
+
+
 def make(seed: int = 0, n_frames: int = 40) -> PolylineContainer:
     rng = np.random.default_rng(seed)
     frames = []
@@ -90,7 +99,8 @@ def test_frames_equal_reference_fig5(c):
     same(FR.arm_length_spread(c, r0, 'fig5'), ref['rows']['arm_length_spread'])
     same(FR.arm_curvature(c, r0, 'fig5'), ref['rows']['arm_curvature'])
     same(KI.tip_motion(c, r0, got_ids), ref['rows']['tip_motion'])
-    same(KI.arm_deformation(c, r0, got_ids), ref['rows']['arm_deformation'])
+    same(KI.arm_deformation(c, r0, got_ids, kabsch='svd'), ref['rows']['arm_deformation'])
+    close(KI.arm_deformation(c, r0, got_ids), ref['rows']['arm_deformation'])
     n = c.arms_per_frame()
     spread = FR.arm_length_spread(c, r0, 'fig5')
     assert np.all(np.isnan(spread[n < 4]))
@@ -119,7 +129,8 @@ def test_frames_equal_reference_fig4e(c):
     same(FR.fold_asymmetry(c, r0, 'fig4e'), ref['columns']['fold_asymmetry'])
     same(FR.arm_length_spread(c, r0, 'fig4e'), ref['columns']['arm_length_spread'])
     same(FR.arm_curvature(c, r0, 'fig4e'), ref['columns']['arm_curvature'])
-    same(KI.arm_deformation(c, r0, ids, lag='prev_frame_reset'), ref['columns']['arm_deformation'])
+    same(KI.arm_deformation(c, r0, ids, lag='prev_frame_reset', kabsch='svd'), ref['columns']['arm_deformation'])
+    close(KI.arm_deformation(c, r0, ids, lag='prev_frame_reset'), ref['columns']['arm_deformation'])
 
 
 def test_relink_reference_and_diagnostics(c):

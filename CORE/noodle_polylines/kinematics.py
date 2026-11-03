@@ -9,6 +9,12 @@ Deformation lag variants (T3.1):
   that had arms and a finite body origin; ``dt`` spans any gap.
 * ``'prev_frame_reset'`` (Fig 4D/4E, prepare_figure_04_kinematics.py:141-156): compare with the previous
   recorded frame only; a frame without a star or arms resets the reference, so the next frame is NaN.
+
+Rigid fit (T3.1): ``kabsch='closed'`` (default) solves the 2-D Kabsch rotation in closed form,
+``theta = atan2(sum cross, sum dot)`` over the centred shapes, which is the best proper rotation, as the
+scripts' SVD with its reflection guard is. It agrees with the scripts' SVD to about 1e-15 absolute
+(5.7e-12 relative at worst over the 1.9M linked pairs of the released corpora); ``kabsch='svd'``
+evaluates the scripts' SVD expression on stacked pairs and is bit-identical to them.
 """
 from __future__ import annotations
 
@@ -18,11 +24,12 @@ from . import _csr
 from . import _reference as R
 from . import _segments as SG
 from . import geometry as G
-from .container import PolylineContainer
+from .container import PolylineContainer, _offsets, _ranges
 from .frames import _r0_per_frame
 
 MODEL_SIZE = 512
 LAGS = ('last_arm_frame', 'prev_frame_reset')
+KABSCH = ('closed', 'svd')
 
 
 def rigid_residual(a: np.ndarray, b: np.ndarray) -> float:
@@ -31,49 +38,191 @@ def rigid_residual(a: np.ndarray, b: np.ndarray) -> float:
 
 
 _PAIR_BLOCK = 1 << 15
+_CLOSED_BLOCK = 1 << 13          # pairs per closed-form block: its (n, k) planes stay in cache
+_SPAN_FRACTION = 0.8            # resample a whole arm span when at least this fraction of it is linked
 
 
-def rigid_residuals(a: np.ndarray, b: np.ndarray, block: int = _PAIR_BLOCK) -> np.ndarray:
-    """(N,) :func:`rigid_residual` of every pair of (N, k, 2) float64 shapes, bit-identical.
+def _centre_planes(P: np.ndarray) -> None:
+    """Centre (2, n, k) shape planes in place by each shape's mean, summed row by row from zero as
+    ``ndarray.mean(0)`` does for a (k, 2) shape (so the centred values equal the scripts' ``a - a.mean(0)``)."""
+    k = P.shape[2]
+    if not P.shape[1]:
+        return
+    s = np.zeros(P.shape[:2])
+    for j in range(k):
+        s += P[:, :, j]
+    s /= k
+    P -= s[:, :, None]
 
-    The script's expression is evaluated on stacked pairs: the row-by-row ``mean(0)``, ``ca.T @ cb``,
-    the 2x2 SVD, ``sign(det(u @ vt))``, ``u @ diag(1, d) @ vt`` and the squared residuals all run as
-    stacked ``matmul`` / LAPACK gufuncs, which apply the same kernel to each slice as the 2-D call does;
-    the final ``.mean()`` over k uses numpy's pairwise order (``_csr.seg_sum``).
-    """
+
+def _closed_rows(ax, ay, bx, by) -> np.ndarray:
+    """RMS residual of centred (n, k) x/y planes after the best proper rotation (closed form).
+
+    Rotating row vectors by ``[[c, s], [-s, c]]`` maps ``(x, y)`` to ``(x c - y s, x s + y c)``; the fit
+    maximises ``c * sum(ax bx + ay by) + s * sum(ax by - ay bx)``, so ``(c, s) = (p, q) / hypot(p, q)``
+    (identity when ``p = q = 0``, as the SVD of a zero matrix gives). Only proper rotations are
+    parameterised: this is the SVD fit with its ``sign(det)`` reflection guard."""
+    k = ax.shape[1]
+    p = np.einsum('ij,ij->i', ax, bx)
+    p += np.einsum('ij,ij->i', ay, by)
+    q = np.einsum('ij,ij->i', ax, by)
+    q -= np.einsum('ij,ij->i', ay, bx)
+    r = np.hypot(p, q)
+    zero = r == 0
+    r[zero] = 1.0
+    c = p / r
+    s = q / r
+    c[zero] = 1.0
+    s[zero] = 0.0
+    c = c[:, None]
+    s = s[:, None]
+    ex = ax * c
+    ex -= ay * s
+    ex -= bx
+    ey = ax * s
+    ey += ay * c
+    ey -= by
+    ssq = np.einsum('ij,ij->i', ex, ex)
+    ssq += np.einsum('ij,ij->i', ey, ey)
+    ssq /= k
+    return np.sqrt(ssq, out=ssq)
+
+
+def _svd_rows(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """The scripts' SVD Kabsch on stacked (n, k, 2) float64 pairs, bit-identical to ``R.rigid_residual``.
+
+    The row-by-row ``mean(0)``, ``ca.T @ cb``, the 2x2 SVD, ``sign(det(u @ vt))``, ``u @ diag(1, d) @ vt``
+    and the squared residuals run as stacked ``matmul`` / LAPACK gufuncs, which apply the same kernel to
+    each slice as the 2-D call does; the final ``.mean()`` over k uses numpy's pairwise order."""
+    n, k = a.shape[:2]
+    sa = np.zeros((n, 2))
+    sb = np.zeros((n, 2))
+    for j in range(k):                       # a.mean(0): accumulated row by row from zero
+        sa += a[:, j]
+        sb += b[:, j]
+    ca = a - (sa / k)[:, None, :]
+    cb = b - (sb / k)[:, None, :]
+    u, _s, vt = np.linalg.svd(np.matmul(np.swapaxes(ca, 1, 2), cb))
+    d = np.sign(np.linalg.det(np.matmul(u, vt)))
+    diag = np.zeros((n, 2, 2))
+    diag[:, 0, 0] = 1.0
+    diag[:, 1, 1] = d
+    rot = np.matmul(np.matmul(u, diag), vt)
+    e = np.matmul(ca, rot)
+    e -= cb
+    e *= e
+    sq = e[..., 0] + e[..., 1]               # .sum(1) of two values
+    return np.sqrt(_csr.seg_sum(sq.ravel(), np.arange(n, dtype=np.int64) * k, np.full(n, k)) / k)
+
+
+def rigid_residuals(a: np.ndarray, b: np.ndarray, block: int = _PAIR_BLOCK, kabsch: str = 'closed') -> np.ndarray:
+    """(N,) :func:`rigid_residual` of every pair of (N, k, 2) float64 shapes.
+
+    ``kabsch='closed'``: closed-form 2-D rotation (module docstring), within about 1e-15 of the SVD;
+    a block with a non-finite shape runs the SVD instead, which raises ``LinAlgError`` as the scripts do.
+    ``kabsch='svd'``: the scripts' SVD expression on stacked pairs, bit-identical."""
+    if kabsch not in KABSCH:
+        raise ValueError(f'kabsch must be one of {KABSCH}')
     a = np.asarray(a, np.float64)
     b = np.asarray(b, np.float64)
-    N, k = a.shape[:2]
+    N = a.shape[0]
     out = np.empty(N)
-    for s in range(0, N, block):
-        pa, pb = a[s:s + block], b[s:s + block]
-        n = len(pa)
-        sa = np.zeros((n, 2))
-        sb = np.zeros((n, 2))
-        for j in range(k):                       # a.mean(0): accumulated row by row from zero
-            sa += pa[:, j]
-            sb += pb[:, j]
-        ca = pa - (sa / k)[:, None, :]
-        cb = pb - (sb / k)[:, None, :]
-        u, _s, vt = np.linalg.svd(np.matmul(np.swapaxes(ca, 1, 2), cb))
-        d = np.sign(np.linalg.det(np.matmul(u, vt)))
-        diag = np.zeros((n, 2, 2))
-        diag[:, 0, 0] = 1.0
-        diag[:, 1, 1] = d
-        rot = np.matmul(np.matmul(u, diag), vt)
-        e = np.matmul(ca, rot)
-        e -= cb
-        e *= e
-        sq = e[..., 0] + e[..., 1]               # .sum(1) of two values
-        out[s:s + n] = np.sqrt(_csr.seg_sum(sq.ravel(), np.arange(n, dtype=np.int64) * k, np.full(n, k)) / k)
+    if kabsch == 'svd':
+        for s in range(0, N, block):
+            out[s:s + block] = _svd_rows(a[s:s + block], b[s:s + block])
+        return out
+    step = min(block, _CLOSED_BLOCK)
+    for s in range(0, N, step):
+        pa = np.ascontiguousarray(np.moveaxis(a[s:s + step], 2, 0))
+        pb = np.ascontiguousarray(np.moveaxis(b[s:s + step], 2, 0))
+        _centre_planes(pa)
+        _centre_planes(pb)
+        res = _closed_rows(pa[0], pa[1], pb[0], pb[1])
+        if not np.isfinite(res).all():
+            res = _svd_rows(a[s:s + step], b[s:s + step])
+        out[s:s + step] = res
     return out
 
 
-def _shapes_of(c: PolylineContainer, base: np.ndarray, arms: np.ndarray, r0: np.ndarray, order: str,
-               af: np.ndarray) -> np.ndarray:
-    """T1.6 shapes of the given arms only (elementwise identical to shape12 of all arms)."""
+def _base_rows(c: PolylineContainer, arms: np.ndarray, base: np.ndarray | None) -> np.ndarray:
+    """(len(arms), K, 2) T0.2 base-first resamples of the given (increasing) arms only.
+
+    From ``base`` when given, or the container's cache inside a caching scope; otherwise only these arms
+    are resampled (each arm's resample depends on its own points only, so the rows are bit-identical to
+    the rows of a whole-container :func:`geometry.resample_base`)."""
+    if base is not None:
+        return base[arms]
+    if c.__dict__.get('_cache_depth'):
+        return G.base_shapes(c)[arms]
+    ao = c.arm_point_offsets
+    if not len(arms):
+        return np.empty((0, G.K, 2))
+    a0, a1 = int(arms[0]), int(arms[-1]) + 1
+    if len(arms) >= _SPAN_FRACTION * (a1 - a0):
+        # most of the span is linked: resample the contiguous span (a slice, no point gather)
+        p0 = int(ao[a0])
+        b = G.resample_base(c.points[p0:int(ao[a1])], ao[a0:a1 + 1] - p0)
+        return b if len(arms) == a1 - a0 else b[arms - a0]
+    counts = (ao[1:] - ao[:-1])[arms]
+    return G.resample_base(c.points[_ranges(ao[arms], counts)], _offsets(counts))
+
+
+def _shape_planes(c: PolylineContainer, arms: np.ndarray, base: np.ndarray | None, r0: np.ndarray, order: str,
+                  af: np.ndarray) -> np.ndarray:
+    """(2, n, K) x/y planes of the T1.6 shapes of the given (increasing) arms: the same elementwise
+    operations as :func:`geometry.shape12` (so the same values), written straight into plane layout."""
+    b = _base_rows(c, arms, base)
     f = af[arms]
-    return G.shape12(base[arms], c.crop[f, 2], r0[f], order=order)
+    side = c.crop[f, 2][None, :, None]
+    r = r0[f][None, :, None]
+    P = np.empty((2, len(arms), b.shape[1]))
+    bt = np.moveaxis(b, 2, 0)
+    if order == 'fig5':
+        np.multiply(bt, side / MODEL_SIZE, out=P)
+    elif order == 'fig4':
+        np.multiply(bt, side, out=P)
+        P /= MODEL_SIZE
+    else:
+        raise ValueError("order must be 'fig4' or 'fig5'")
+    P /= r
+    return P
+
+
+def _pair_residuals(c: PolylineContainer, ref: np.ndarray, cur: np.ndarray, base: np.ndarray | None,
+                    r0: np.ndarray, order: str, af: np.ndarray, kabsch: str) -> np.ndarray:
+    """Rigid-fit residual of every (ref arm, cur arm) pair. Each arm's shape is built (and, for the closed
+    form, centred) once, however many pairs it is in; only the arms in a pair are resampled."""
+    need = np.zeros(c.n_arms, bool)
+    need[ref] = True
+    need[cur] = True
+    arms = np.flatnonzero(need)
+    pos = np.cumsum(need) - 1
+    iref, icur = pos[ref], pos[cur]
+    res = np.empty(len(cur))
+    # shapes in blocks of arms (bounded memory); a pair's two arms lie within one frame gap of each other,
+    # so blocks of pairs ordered by cur arm touch a bounded window of arms
+    blk = _PAIR_BLOCK
+    for s in range(0, len(cur), blk):
+        ir, ic = iref[s:s + blk], icur[s:s + blk]
+        lo = int(min(ir.min(), ic.min()))
+        hi = int(max(ir.max(), ic.max())) + 1
+        P = _shape_planes(c, arms[lo:hi], base, r0, order, af)
+        ir = ir - lo
+        ic = ic - lo
+        if kabsch == 'svd':
+            Pa = np.moveaxis(P, 0, 2)
+            res[s:s + blk] = _svd_rows(Pa[ir], Pa[ic])
+            continue
+        _centre_planes(P)
+        px, py = P[0], P[1]
+        for t in range(0, len(ir), _CLOSED_BLOCK):
+            jr, jc = ir[t:t + _CLOSED_BLOCK], ic[t:t + _CLOSED_BLOCK]
+            out = _closed_rows(px[jr], py[jr], px[jc], py[jc])
+            if not np.isfinite(out).all():          # non-finite shapes: the SVD (raises like the scripts)
+                Pa = np.moveaxis(_shape_planes(c, arms[lo:hi], base, r0, order, af), 0, 2)
+                out = _svd_rows(Pa[jr], Pa[jc])
+            res[s + t:s + t + len(jr)] = out
+    return res
 
 
 def _track(c: PolylineContainer, track_id) -> np.ndarray:
@@ -154,9 +303,31 @@ def _pairs_prev_frame(af: np.ndarray, tid: np.ndarray, mask: np.ndarray) -> tupl
     return ref, cur
 
 
+def _want(frames, F: int) -> np.ndarray | None:
+    """(F,) bool of requested output frames (bool mask or frame positions), or None for all."""
+    if frames is None:
+        return None
+    w = np.asarray(frames)
+    if w.dtype == bool:
+        if w.shape != (F,):
+            raise ValueError('frames mask must be (F,)')
+        return w
+    m = np.zeros(F, bool)
+    m[w.astype(np.int64)] = True
+    return m
+
+
+def _keep(ref: np.ndarray, cur: np.ndarray, want: np.ndarray | None, af: np.ndarray):
+    if want is None:
+        return ref, cur
+    k = want[af[cur]]
+    return ref[k], cur[k]
+
+
 def arm_deformation(c: PolylineContainer, r0, track_id: np.ndarray | None = None, lag: str = 'last_arm_frame',
                     shape_order: str | None = None, shape_mask: np.ndarray | None = None,
-                    base: np.ndarray | None = None) -> np.ndarray:
+                    base: np.ndarray | None = None, frames=None, kabsch: str = 'closed',
+                    _pairs: tuple[np.ndarray, np.ndarray] | None = None) -> np.ndarray:
     """T3.1 (F,) median over linked arms of the rigid-fit RMS shape residual / R0 / dt (R0 / s).
 
     Shapes are T1.6 (12-point base-first resample x side/512 / R0). ``shape_order`` defaults to 'fig4' for
@@ -164,59 +335,74 @@ def arm_deformation(c: PolylineContainer, r0, track_id: np.ndarray | None = None
     restricts the frames that contribute shapes (Fig 4D uses star frames within [start - 1, stop]); the
     default is star frames for ``prev_frame_reset``. Raw values; Fig 4D plots ``log10(max(x, 1e-3))``.
 
-    The track joins are sorted-key lookups over all frames at once and the residuals are batched
-    (:func:`rigid_residuals`); the values are bit-identical to the scripts' per-frame dict loops.
+    ``frames`` (bool mask (F,) or frame positions) computes only those output frames, the rest NaN; the
+    lag reference may lie outside them (a window's values equal the whole-sequence run's). ``kabsch``:
+    'closed' (default) or 'svd' (bit-identical to the scripts), see the module docstring. ``base``
+    (A, K, 2) optional precomputed :func:`geometry.resample_base`; otherwise only linked arms are
+    resampled.
+
+    The track joins are sorted-key lookups over all frames at once (index arithmetic for both lag
+    variants), and every arm's shape is built once and fitted against its partner in batches.
     """
     if lag not in LAGS:
         raise ValueError(f'lag must be one of {LAGS}')
+    if kabsch not in KABSCH:
+        raise ValueError(f'kabsch must be one of {KABSCH}')
     c.require('crop')
     tid = _track(c, track_id)
     F = c.n_frames
     r0 = _r0_per_frame(r0, F)
     order = shape_order or ('fig4' if lag == 'prev_frame_reset' else 'fig5')
     t = c.times()
-    fo = c.frame_arm_offsets
     af = c.arm_frame()
-    if lag == 'prev_frame_reset':
+    if _pairs is not None:
+        ref, cur = _pairs
+    elif lag == 'prev_frame_reset':
         mask = c.star_mask() if shape_mask is None else (np.asarray(shape_mask, bool) & c.star_mask())
         ref, cur = _pairs_prev_frame(af, tid, mask)
     else:
-        c.require('body_origin_model')
-        ok = (np.diff(fo) > 0) & np.all(np.isfinite(c.body_origin_model), axis=1)
-        if shape_mask is not None:
-            ok &= np.asarray(shape_mask, bool)
-        ref, cur = _pairs_last_arm_frame(af, tid, ok)
+        ref, cur = _pairs_last_arm_frame(af, tid, _ok_frames(c, shape_mask))
+    ref, cur = _keep(ref, cur, _want(frames, F), af)
     if not len(cur):
         return np.full(F, np.nan)
-    if base is None:
-        base = G.base_shapes(c)
-    res = np.empty(len(cur))
-    for s in range(0, len(cur), _PAIR_BLOCK):
-        rb, cb = ref[s:s + _PAIR_BLOCK], cur[s:s + _PAIR_BLOCK]
-        res[s:s + _PAIR_BLOCK] = rigid_residuals(_shapes_of(c, base, rb, r0, order, af),
-                                                 _shapes_of(c, base, cb, r0, order, af))
+    res = _pair_residuals(c, ref, cur, base, r0, order, af, kabsch)
     fc = af[cur]
     with np.errstate(divide='ignore', invalid='ignore'):
         bends = res / (t[fc] - t[af[ref]])
     return _frame_median(bends, fc, F)
 
 
-def tip_motion(c: PolylineContainer, r0, track_id: np.ndarray | None = None) -> np.ndarray:
+def _ok_frames(c: PolylineContainer, shape_mask=None) -> np.ndarray:
+    """'last_arm_frame' frames: with arms and a finite body origin (and in ``shape_mask``)."""
+    c.require('body_origin_model')
+    ok = (np.diff(c.frame_arm_offsets) > 0) & np.all(np.isfinite(c.body_origin_model), axis=1)
+    if shape_mask is not None:
+        ok &= np.asarray(shape_mask, bool)
+    return ok
+
+
+def last_arm_frame_pairs(c: PolylineContainer, track_id: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """(ref arm, cur arm) links of the 'last_arm_frame' lag (shared by T3.1 lag B and T3.2), for reuse
+    across :func:`arm_deformation` and :func:`tip_motion` through their ``_pairs`` argument."""
+    return _pairs_last_arm_frame(c.arm_frame(), _track(c, track_id), _ok_frames(c))
+
+
+def tip_motion(c: PolylineContainer, r0, track_id: np.ndarray | None = None, frames=None,
+               _pairs: tuple[np.ndarray, np.ndarray] | None = None) -> np.ndarray:
     """T3.2 (F,) median over linked arms of the body-relative tip displacement / R0 / dt (R0 / s).
 
     ``rel_tip = (tip - body_origin) * (side/512) / R0``; an arm counts when its track had a tip in the last
-    frame with arms and a finite origin (prepare_figure_05_measures.py:192-198,203-205). Batched like
-    :func:`arm_deformation`; bit-identical to the per-frame loop.
+    frame with arms and a finite origin (prepare_figure_05_measures.py:192-198,203-205). ``frames`` as in
+    :func:`arm_deformation`. Batched like :func:`arm_deformation`; bit-identical to the per-frame loop.
     """
     c.require('crop', 'body_origin_model')
     tid = _track(c, track_id)
     F = c.n_frames
     r0 = _r0_per_frame(r0, F)
     t = c.times()
-    fo = c.frame_arm_offsets
     af = c.arm_frame()
-    ok = (np.diff(fo) > 0) & np.all(np.isfinite(c.body_origin_model), axis=1)
-    ref, cur = _pairs_last_arm_frame(af, tid, ok)
+    ref, cur = _pairs if _pairs is not None else _pairs_last_arm_frame(af, tid, _ok_frames(c))
+    ref, cur = _keep(ref, cur, _want(frames, F), af)
     if not len(cur):
         return np.full(F, np.nan)
     tips = c.points[c.arm_point_offsets[1:] - 1]

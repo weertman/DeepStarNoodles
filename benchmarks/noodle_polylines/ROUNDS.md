@@ -729,3 +729,174 @@ points on both sides; it fails on the first round-3 version. After the fix: `par
 margin 7.6e-4); 109 tests pass. A re-link of the micro example takes 19.0–20.0 µs/arm after the
 fix and 18.7–19.2 µs/arm before it (best of 15, three alternating runs). That is within run-to-run
 noise, so the round-3 timings above stand.
+
+## Round 4: tracked kinematics (T3)
+
+### What changed and why
+
+Round 2 had already replaced the scripts' per-frame dicts with sorted (frame, track) key joins
+(`searchsorted` on `np.unique`-coded keys; both lag variants are index arithmetic on frame
+ordinals) and vectorised T3.2. So this round started from a profile, not from the plan's list.
+`arm_deformation` (lag B) on the 1e6-arm synthetic input at `bf65377` took 3.86 s:
+
+- the stacked SVD Kabsch fit took 2.0 s (51%): `svd` 1.22 s, `det` 0.09 s, and the
+  `rigid_residuals` matmuls and sums the rest;
+- the T0.2 base resample of every arm took 1.52 s (40%);
+- the joins and medians took about 0.15 s.
+
+Changes:
+
+- **Closed-form 2-D Kabsch (`kabsch='closed'`, the new default).** For centred shapes, the best
+  proper rotation of row vectors, `[[c, s], [-s, c]]`, maximises `c·p + s·q`, where
+  `p = Σ(x_a x_b + y_a y_b)` and `q = Σ(x_a y_b − y_a x_b)`. So `(c, s) = (p, q) / hypot(p, q)`,
+  with the identity when `p = q = 0` (the SVD of a zero matrix also gives the identity). Only proper
+  rotations are parameterised, so this is the same fit as the scripts' SVD with its
+  `sign(det(u @ vt))` reflection guard. The residual is still formed explicitly, as
+  `sqrt(mean(|ca·R − cb|²))`, not as `|ca|² + |cb|² − 2·hypot(p, q)`, which would cancel
+  catastrophically for small residuals. The centred shapes are the scripts' own (`mean(0)` summed
+  row by row), so only the rotation differs. The arithmetic runs on contiguous (n, 12) x/y planes:
+  `einsum` row dots, in blocks of 8,192 pairs that stay in cache. It costs about 0.3 µs per pair,
+  against 2.2 µs for the stacked SVD. A block with a non-finite value runs the SVD instead, which
+  raises `LinAlgError` exactly as the scripts do (a NaN R0 on a linked frame, for example).
+  - **Accuracy audit (new, full corpora).** Every linked pair of all 44 flipping clips and all 191
+    non-empty Sleepy segments, under both lags, was compared with the SVD: 1,876,495 pairs. The
+    largest difference is 1.9e-15 absolute and 5.7e-12 relative; only 22 pairs differ by more
+    than 1e-12 relative. The spec's bound is 1e-10 absolute. No pair had identical or near-zero
+    shapes, where a relative comparison would be meaningless.
+  - `kabsch='svd'` (on `rigid_residuals`, `arm_deformation` and `compute_all`) keeps the round-2
+    stacked SVD. It is bit-identical to the scripts.
+- **Each linked arm's shape is built once.** The (ref, cur) pairs are mapped to the sorted set
+  of linked arms. Each arm's T1.6 shape is written straight into the plane layout and centred
+  once; before, an arm in two pairs was scaled and centred twice. The elementwise operations are
+  those of `shape12`, so the values are the same.
+- **Only linked arms are resampled.** Without a `base=` argument, `arm_deformation` no longer
+  resamples every arm of the container. It works in blocks of 32,768 pairs and resamples only the
+  linked arms of the block's arm span: by slicing the contiguous span when at least 80% of it is
+  linked, else by gathering the linked arms' points. The full (A, 12, 2) float64 base array (192 B
+  per arm) is no longer allocated, which is where the memory drop below comes from. Each arm's
+  resample depends only on its own points, so the rows are bit-identical to a whole-container
+  resample; a test checks this. Inside a caching scope the container's cached base is used.
+- **Requested frames only (`frames=`).** `arm_deformation` and `tip_motion` take an optional bool
+  mask or list of frame positions and compute only those output frames; the others are NaN. The lag
+  reference may lie outside the request, and the requested values equal the whole-sequence run's.
+  This is the Fig 4E case (the script loops over the whole clip but writes only the event window).
+  Shapes are built only for the pairs that land in the request.
+- **`compute_all` changes.** It no longer resamples every arm before the deformation (unless
+  `shapes=True` asks for the resample). Fig 4D therefore resamples only the arms of its bout spans.
+  For lag B (Fig 5), it builds the `last_arm_frame` links once
+  (`kinematics.last_arm_frame_pairs`) and passes them to both the deformation and the tip motion.
+
+`_reference.py`, the fixtures, `parity_check.py` and its tolerances are unchanged.
+
+**Tests.** The existing bit-exact deformation assertions keep their strictness: they now pass
+`kabsch='svd'` explicitly. The test files are `segments`, `edge`, `parity` and `regressions`, and
+they compare against the per-frame dict loops, `_reference` and the fixtures. Each one gained a
+companion check of the closed-form default against the same reference. That check requires
+identical NaN and inf positions and finite values within the gate's rtol 1e-9.
+
+New tests:
+
+- closed form against the SVD at ≤ 1e-10 absolute on mirrored shapes (where the guard flips),
+  collinear (rank-1) shapes, single-point shapes on either side, exact rotations and 1e6 offsets;
+- non-finite shapes raise like the scripts;
+- `frames=` against the whole-sequence run for both lags and both fits;
+- the subset resample against a whole-container resample, bit for bit, and `base=`, a caching
+  scope and the lazy path giving the same deformation;
+- pair blocks of 37 and closed-form blocks of 5;
+- the shared lag-B links in `compute_all`.
+
+### Run
+
+| | |
+|---|---|
+| Date | 2026-11-03 |
+| CPU | Intel Xeon W-3365, 64 cores (shared workstation, load average 1.3–1.8) |
+| Software | Python 3.12.13, numpy 2.4.3, scipy 1.17.1 |
+| Before | `bf65377` (round 3 plus its review fix), in a separate worktree, with the same `bench.py` |
+| After | this commit |
+
+```
+# before, then after (sequential, never overlapping)
+OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,subset,synthetic \
+    --data-dir RUNS/paper_retrace_f39dc82b --synthetic-arms 1000000 --repeats 5 --jobs 1 \
+    --kernels "T0.2 resample_base,T3.1,T3.2,E2E compute_all fig5,E2E compute_all fig4d"
+```
+
+- **Timings.** Best of 5 after one warm-up, each job in a fresh single-threaded process,
+  `--jobs 1`. The before and after runs ran one after the other, with no overlap. The kernels
+  this round did not change came out equal in both runs: resample_base 1.66 → 1.66 µs/arm on the
+  subset and 1.44 → 1.48 on synthetic, and tip_motion 0.31 → 0.31 and 0.26 → 0.25. Read the
+  speed-ups as ±5%.
+- **Inputs.** The same as rounds 1–3: micro is 1,226 arms, the subset 173,434 arms (7 flipping
+  clips and 36 Sleepy segments), and the synthetic input the subset tiled to 1,000,416 arms. The
+  T3 kernels receive their track IDs before timing (`_ids`), so they time the kinematics alone.
+- **Memory.** "Kernel +MB" is the growth of VmHWM over the built input during the kernel (VmHWM is
+  reset after the build), before → after.
+
+### Per kernel (before → after, CPU µs/arm)
+
+| Kernel | Micro | Subset | Synthetic | Speed-up, subset / synthetic | Kernel +MB, subset; synthetic |
+|---|---:|---:|---:|---:|---:|
+| **T3.1 arm_deformation lag B (Fig 5)** | 4.90 → 3.21 | 4.01 → 2.23 | 3.77 → 2.01 | **1.80× / 1.87×** | 10.8 → 10.2; **29.7 → 6.2** |
+| **T3.1 arm_deformation lag A (Fig 4)** | 4.89 → 3.25 | 4.04 → 2.29 | 3.76 → 2.03 | **1.76× / 1.85×** | 10.3 → 10.6; **28.7 → 12.0** |
+| T3.2 tip_motion (unchanged) | 0.41 → 0.41 | 0.31 → 0.31 | 0.26 → 0.25 | 1.0× | 0.4 → 0.4; 0.5 → 0.5 |
+| **E2E compute_all fig5 (stored IDs)** | 8.36 → 6.28 | 16.09 → 14.34* | 5.42 → 3.54 | 1.12×* / **1.53×** | 21.5 → 20.6; **32.4 → 11.2** |
+| **E2E compute_all fig4d (bout windows, stored IDs)** | 7.13 → 4.66 | 5.16 → 3.67 | 4.38 → 3.03 | **1.40× / 1.45×** | 11.4 → 7.8; 4.3 → 1.0 |
+| E2E compute_all fig5 + relink | 27.07 → 25.14 | 23.22 → 21.30 | 22.04 → 20.25 | 1.09× / 1.09× | 29.2 → 29.0; 49.8 → 49.0 |
+| *unchanged:* T0.2 resample_base | 2.30 → 2.40 | 1.66 → 1.66 | 1.44 → 1.48 | — | 16.5 → 16.5; 2.8 → 2.6 |
+
+\* As in round 3, the subset's "stored IDs" row re-links its 36 Sleepy segments, which have no
+stored IDs, so the tracker dominates it. On synthetic every arm has a stored ID.
+
+Whole-process peak RSS on synthetic (input build plus kernel): lag B 445 → 424 MB, lag A
+444 → 430 MB, and fig5 with stored IDs 450 → 429 MB. The kernel's own growth drops by 20–23 MB
+per 1e6 arms, because the full base array is gone. That saving scales with the sequence: at
+1e8 arms in one container it would be about 19 GB less. The re-link path is unchanged; the
+tracker's per-block arm rows dominate it.
+
+### Camera-year projection (3e8 arms, one core)
+
+| Workload | Round 3 (`bf65377`, this run) | Round 4 |
+|---|---:|---:|
+| Fig 5 representations with stored IDs (synthetic basis) | 0.45 CPU-h | **0.30 CPU-h** |
+| Fig 4D representations with stored IDs (subset basis) | 0.43 CPU-h | **0.31 CPU-h** |
+| T3.1 deformation alone, lag B (subset basis) | 0.33 CPU-h | **0.19 CPU-h** |
+| Fig 5 representations with a re-link (subset basis) | 1.94 CPU-h | **1.78 CPU-h** |
+| One tracker pass; Fig 6D diagnostics (not re-timed) | 1.4; 8.4 CPU-h | 1.4; 8.4 CPU-h |
+
+Against v0 (518f47e, 124.6 µs/arm on synthetic), the Fig 5 stored-ID path is now 35× faster
+(3.54 µs/arm). A camera-year of Fig 5 with a re-link went from 54 to 1.8 CPU-h.
+
+### Hotspots after round 4
+
+T3.1 lag B on the synthetic input took 2.05 s profiled, against 3.86 s before:
+
+| Function | Self s | Cumulative s | Note |
+|---|---:|---:|---|
+| `geometry._resample_base_block` + `_csr.seg_search` + `seg_cumsum` + `_seg_norm` | 1.33 | 1.48 | T0.2 base resample of the linked arms (98% of arms on this input): 72% |
+| `kinematics._closed_rows` | 0.09 | 0.14 | the closed-form fit (was 2.0 s as SVD) |
+| `kinematics._centre_planes`, `_shape_planes` | 0.15 | — | T1.6 shapes in plane layout, centred once per arm |
+| joins (`argsort`, `searchsorted`, `unique`) and medians | ≈0.15 | — | unchanged |
+
+T3 is now bound by the round-1 base resample. Its per-segment bisection (`seg_search`, 0.65 s)
+is the largest item. An exact counting alternative was tried in this round: each node is placed
+among the 12 uniform targets with a corrected `ceil(arc/step)`, then `bincount` and `cumsum`. It
+gave identical indices but took 0.92 µs/arm against 0.61 for the bisection, so it was dropped.
+In the stored-ID Fig 5 path, the base resample (1.5 µs/arm) and `arc_length_curvature`
+(1.2 µs/arm) now make up most of the remaining 3.5 µs/arm. The re-link path is still about 90%
+tracker (`_assoc.span_dist_rows` and `ArrayTracker.step`, as at round 3).
+
+### Parity and tests at round 4
+
+- `parity_check.py`, unchanged, full gate (micro, 7 flipping clips, and the Sleepy subset with all
+  18 Fig 6D sequences): **4,213 checks, 0 failed, 3,773 bit-identical**. The 440 checks that are
+  not bit-identical are all T3.1 deformation outputs (Fig 4D log deformation, Fig 4E lag A, Fig 5
+  lag B, and their `compute_all` preset rows). Their largest relative difference is 7.7e-14,
+  against the gate's 1e-9, and every NaN position is identical. All track IDs, assignments, drop
+  decisions, masks and other floats remain bit-identical. Near-tie audit unchanged: 39,953 LSA
+  calls, 0 below 1e-6, smallest margin 7.6e-4.
+- The same gate with the rigid fit forced to `kabsch='svd'` (a wrapper that patches the fit in an
+  in-process `--jobs 1` run; `parity_check.py` itself untouched): **4,213 checks, 0 failed, 4,213
+  bit-identical**, as in rounds 1–3.
+- `pytest tests/test_noodle_polylines*.py`: **116 passed** (109 + 7 new cases from 4 new test functions). The
+  micro example runs, and its printed output is identical to round 3's.
