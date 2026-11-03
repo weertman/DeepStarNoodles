@@ -11,6 +11,82 @@ Each round also reports `bench.py` timings against the v0 baseline. Timings are 
 threaded (`OMP_NUM_THREADS=1`), with each kernel in its own process. The camera-year
 projection uses 3e8 arms at about 1 fps.
 
+## Final summary
+
+Final state: commit `20d79ca` (round 5 plus its review fix), re-measured on 2026-11-03 with the same
+harness and settings as rounds 4 and 5 (`--repeats 5 --jobs 1 --io`, `OMP_NUM_THREADS=1`, each job
+in a fresh process, load average about 2 on 64 cores). Read single values as ±5%.
+
+```
+OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,subset,synthetic \
+    --data-dir RUNS/paper_retrace_f39dc82b --synthetic-arms 1000000 --repeats 5 --jobs 1 --io
+```
+
+**Gate at the final commit.**
+
+- `parity_check.py`, full gate: 4,213 checks, 0 failed, 3,773 bit-identical. The other 440 are the
+  T3.1 deformation outputs of the default closed-form rigid fit, at most 7.7e-14 relative, with the
+  same NaN positions. With the SVD fit forced: 4,213 bit-identical. Near-tie audit: 39,953 LSA calls,
+  none with a margin below 1e-6; the smallest is 7.6e-4.
+- `pytest tests/test_noodle_polylines*.py`: 141 passed. The rest of the repository's tests: 132
+  passed, 4 skipped. The micro example's output is identical to round 4's.
+
+**Per kernel, CPU µs/arm, subset input** (173,434 arms: 7 flipping clips and 36 Sleepy segments).
+Each round's column is that round's "after" value. "·" means the round did not change or re-time
+the kernel. The v0 column is `518f47e` (v0 plus its review fixes) under the corrected harness: the
+"before" column of round 1. The v0 run itself was contended and is listed under "Baseline (v0)".
+
+| Kernel | v0 | R1 | R2 | R3 | R4 | R5 | Final | v0 / final |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| T0.2 resample_base | 30.65 | 1.86 | 1.75 | · | 1.66 | 1.67 | 1.66 | 18× |
+| T0.2 resample_tip (tracker input) | 70.40 | 2.84 | 2.79 | 2.60 | · | · | 2.55 | 28× |
+| T0.3 + T1.1 arc_length_curvature | 30.41 | 1.53 | 1.46 | · | · | · | 1.23 | 25× |
+| T0.4 to_source | 0.86 | 0.33 | 0.33 | · | · | · | 0.30 | 2.9× |
+| T2.2 fold_asymmetry (fig5) | 1.47 | 1.48 | 0.08 | · | · | · | 0.07 | 21× |
+| T2.3 arm_length_spread (includes T0.3) | 32.82 | 7.21 | 1.57 | · | · | · | 1.23 | 27× |
+| T2.4 arm_curvature (includes T1.1) | 30.16 | 4.32 | 1.58 | · | · | · | 1.31 | 23× |
+| T2.5 frame_lists_4b (includes T0.3) | (2.25 at R1) | — | 1.51 | · | · | · | 1.28 | 1.8× vs R1 |
+| T2.6 tip_isotropy | 5.74 | 5.74 | 0.20 | · | · | · | 0.20 | 29× |
+| T3.1 arm_deformation, lag B (Fig 5) | 78.40 | 46.84 | 4.11 | · | 2.23 | · | 2.23 | 35× |
+| T3.1 arm_deformation, lag A (Fig 4) | 76.10 | 46.81 | 4.27 | · | 2.29 | · | 2.24 | 34× |
+| T3.2 tip_motion | 6.45 | 6.40 | 0.31 | · | 0.31 | · | 0.31 | 21× |
+| **T4.4 relink (1 tracker pass)** | 659.2 | 586.6 | · | 17.0 | · | · | 16.89 | **39×** |
+| **T4.5 diagnostics (10 passes)** | 4,117.7‡ | · | · | 100.6 | · | · | 101.5 | **41×** |
+| **E2E compute_all fig5 + relink** | 796.0 | 656.3 | 592.7 | 23.0 | 21.30 | · | 21.24 | **37×** |
+| E2E compute_all fig5, stored IDs (synthetic†) | 124.62 | 69.56 | 5.56 | 5.62 | 3.54 | 3.59 | 3.55 | **35×** |
+| E2E compute_all fig4d, bout windows (synthetic†) | (41.52 at R1) | — | 4.39 | · | 3.03 | · | 3.00 | 14× vs R1 |
+| IO adapter: inference JSONL (runner-shaped) | — | · | · | · | 57.36 | 35.41 | 36.38 | 1.6× vs R4 |
+| IO adapter: flipping clips (per flipping arm) | — | · | · | · | 16.22 | 6.10 | 6.14 | 2.6× vs R4 |
+| IO adapter: Sleepy segments (per Sleepy arm) | — | · | · | · | 2.60 | 2.05 | 2.05 | 1.3× vs R4 |
+| E2E file → fig5, stored IDs (synthetic†; R5 on: mmap) | — | · | · | · | 4.94 | 3.73 | 3.77 | 1.3× vs R4 |
+
+† The subset's Sleepy segments have no stored IDs, so its "stored IDs" rows include a re-link; the
+synthetic input (the subset tiled 6×, 1,040,604 arms, all with IDs) is used instead. Rows marked
+"vs R1" or "vs R4" were added to `bench.py` in that round, so they have no v0 value.
+‡ From the contended v0 run itself (not re-timed at `518f47e`); at round-2 code it measured 3,968.6.
+
+**Camera-year projection** (3e8 arms, one core, CPU-h; final values are µs/arm × 3e8 / 3.6e9).
+
+| Workload (basis) | v0 | R1 | R2 | R3 | R4 | R5 | Final |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Fig 5 representations, stored IDs (synthetic) | 10.4 | 5.8 | 0.46 | 0.47 | 0.30 | 0.30 | **0.30** |
+| Fig 4D representations, stored IDs (synthetic) | — | 3.46 | 0.37 | · | 0.25 | · | **0.25** |
+| One tracker pass (subset) | 54.9 | 48.9 | ≈ 49 | 1.4 | · | · | **1.4** |
+| Fig 5 with a re-link (subset) | 66.3 | 54.7 | 49.4 | 1.9 | 1.78 | 1.67 (1e7 basis) | **1.77** |
+| Fig 6D diagnostics, 10 passes (subset) | ≈ 343 | ≈ 335 | ≈ 335 | 8.4 | · | · | **8.5** |
+| Convert backcast JSONL records → containers (subset) | — | · | · | · | 4.8 | 3.0 | **3.0** |
+| Whole path from backcast records: convert, re-link, Fig 5 | — | · | · | · | 6.5 | 4.6 | **4.8** |
+
+The final whole path is 3.0 + 1.8 CPU-h on the subset basis; round 5 quoted 4.6 from the real
+round-16 records (2.8) and the 1e7 synthetic (1.67). It splits across processes by file
+(`compute_many(workers=N)`): about 0.15 wall-hours per camera-year on 32 workers when the files are
+many and similar in size.
+
+**What is left.** Text parsing of the inference records (about 22 of their 36 µs/arm; the floor is
+text-to-double conversion, so the next step is a binary inference output, outside this package);
+the sequential tracker frame loop (about 17 µs/arm per pass); and, for the representations, the
+base resample and the arc metrics (about 1.2–1.7 µs/arm each).
+
 ## Baseline (v0)
 
 v0 is a straight port. The public functions loop over arms and frames and call the
@@ -213,7 +289,7 @@ OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,sub
 - **Timings.** Each value is the best of 5 runs after one warm-up, each job in a fresh
   single-threaded process. The two commands ran together, so 18 of 64 cores were busy; both runs had
   the same contention.
-- **Inputs.** The synthetic input is the subset tiled to 1,000,416 arms. The 10-pass T4.5 diagnostics
+- **Inputs.** The synthetic input is the subset tiled 6× to 1,040,604 arms. The 10-pass T4.5 diagnostics
   were not re-timed. Only their one-off tracker-input resample changed, so they stay at about 4,100
   µs/arm.
 - **Memory.** The before column of kernel peak RSS often reads 0 MB for the per-arm loops. Their
@@ -425,7 +501,7 @@ OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,sub
 - **Not re-timed.** The tracker kernels (T4.4 relink, T4.5 diagnostics) did not change in this
   round.
 - **Inputs.** The same as round 1: micro is 1,226 arms; the subset is 173,434 arms (7 flipping
-  clips and 36 Sleepy segments); the synthetic input is the subset tiled to 1,000,416 arms.
+  clips and 36 Sleepy segments); the synthetic input is the subset tiled 6× to 1,040,604 arms.
 - **Memory.** Peak RSS is whole-process VmHWM in MB (input build plus kernel), shown as before → after.
 
 ### Per kernel (before → after)
@@ -611,7 +687,7 @@ OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,sub
   synthetic, against 1.95 at round 2; fig5 stored-ID synthetic 5.62, against 5.56) are within 3% of
   round 2. Read the speed-ups as ±10%.
 - **Inputs.** The same as rounds 1 and 2: micro is 1,226 arms, the subset 173,434 arms (7 flipping
-  clips and 36 Sleepy segments), and the synthetic input the subset tiled to 1,000,416 arms. T4.5
+  clips and 36 Sleepy segments), and the synthetic input the subset tiled 6× to 1,040,604 arms. T4.5
   is not run on the synthetic input (`--skip-expensive-on synthetic`, the default).
 - **Memory.** Peak RSS is whole-process VmHWM in MB (input build plus kernel), before → after.
 
@@ -828,7 +904,7 @@ OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,sub
   subset and 1.44 → 1.48 on synthetic, and tip_motion 0.31 → 0.31 and 0.26 → 0.25. Read the
   speed-ups as ±5%.
 - **Inputs.** The same as rounds 1–3: micro is 1,226 arms, the subset 173,434 arms (7 flipping
-  clips and 36 Sleepy segments), and the synthetic input the subset tiled to 1,000,416 arms. The
+  clips and 36 Sleepy segments), and the synthetic input the subset tiled 6× to 1,040,604 arms. The
   T3 kernels receive their track IDs before timing (`_ids`), so they time the kinematics alone.
 - **Memory.** "Kernel +MB" is the growth of VmHWM over the built input during the kernel (VmHWM is
   reset after the build), before → after.

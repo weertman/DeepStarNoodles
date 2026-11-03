@@ -16,8 +16,10 @@ ultralytics (and so torch), opencv and pandas. For a numpy + scipy-only environm
 `CORE/` on `PYTHONPATH` (or copy `CORE/noodle_polylines`), or install the repository with
 `pip install --no-deps .` next to `numpy` and `scipy`.
 
-Every definition reproduces the figure scripts bit for bit. Where two panels define a
-quantity differently, the library keeps both as an explicit, named option.
+Every definition reproduces the figure scripts bit for bit, with one switchable exception:
+the default closed-form rigid fit of T3.1 (`kabsch='closed'`) agrees with the scripts' SVD to
+about 1e-13 relative, and `kabsch='svd'` is bit-identical (see below). Where two panels define
+a quantity differently, the library keeps both as an explicit, named option.
 `noodle_polylines._reference` holds slow, line-by-line ports of the figure-script code,
 and the tests and the parity gate compare the public functions against it.
 
