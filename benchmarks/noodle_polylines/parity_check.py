@@ -17,6 +17,11 @@ the store's input containers are used.
 Tolerances (never loosened silently): integer, label, mask and decision outputs exact; tip-first
 resample <= 1e-5 px; every other float rtol 1e-9 with identical NaN and +-inf positions. The table also
 says whether a float output is bit-identical.
+
+Near-tie audit (information, never a failure): for every tracker assignment of the flipping relinks
+(fused, shape-only and uncapped) and of the Sleepy Fig 5 event relinks, the decision margin
+(``tracking.assignment_margin``) is computed and margins below 1e-6 are listed, so that a future change
+that is not bit-identical can be judged against the assignments it could flip.
 """
 from __future__ import annotations
 
@@ -50,6 +55,7 @@ STATE_NAMES = {0: 'Right Side Up', 1: 'Being flipped', 2: 'Upside Down'}
 SLEEPY_STATES = ('quiescent', 'SA', 'moving')
 RESAMPLE_ATOL = 1e-5
 RTOL = 1e-9
+NEAR_TIE = 1e-6        # near-tie audit: LSA decision margins below this are flagged (reported, not failed)
 
 
 # ------------------------------------------------------------------------------------------ comparison
@@ -94,6 +100,20 @@ class Checks:
 
     def fail(self, rep: str, msg: str) -> None:
         self.rows.append({'scope': self.scope, 'rep': rep, 'kind': 'run', 'ok': False, 'bit': False, 'detail': msg})
+
+
+def near_tie_audit(chk: Checks, rep: str, matrices: list, capped: bool = True) -> None:
+    """Record the decision margin of every tracker LSA call (tracking.assignment_margin) as an info row.
+
+    A margin below NEAR_TIE means a last-bit difference in one cost could change which pairs are kept;
+    such calls are listed (by call number) so a future non-bit-identical change can be judged."""
+    margins = np.array([TR.assignment_margin(m, capped) for m in matrices], np.float64)
+    near = np.flatnonzero(margins < NEAR_TIE)
+    mn = float(margins.min()) if len(margins) else float('inf')
+    chk.rows.append({'scope': chk.scope, 'rep': rep, 'kind': 'info', 'audit': 'near_tie', 'ok': True, 'bit': True,
+                     'n_lsa': int(len(margins)), 'n_near': int(len(near)), 'min_margin': mn,
+                     'near_calls': near.tolist(), 'near_margins': margins[near].tolist(),
+                     'detail': f'{len(margins)} LSA calls, {len(near)} with margin < {NEAR_TIE:g}, min {mn:.3g}'})
 
 
 def _jd(o, **kw):
@@ -190,6 +210,11 @@ def check_flip(name: str, ref_root: str, data_dir: str | None, quick: bool, sour
     chk.add('T4.2/4.3 LSA matrices (augmented cost)', vals, rl['lsa_full_values'])
     chk.add('T4.3 LSA rows', np.concatenate([r_ for _, r_, _ in mats]), rl['lsa_rows'], 'exact')
     chk.add('T4.3 LSA cols', np.concatenate([c_ for _, _, c_ in mats]), rl['lsa_cols'], 'exact')
+    near_tie_audit(chk, 'T4.3 near-tie audit (fused relink)', [m for m, _, _ in mats])
+    for v in ('shape_only', 'no_cap'):
+        vm = []
+        TR.relink(c, TR.VARIANTS[v], assign_hook=lambda m, r_, c_: vm.append(m.copy()))
+        near_tie_audit(chk, f'T4.3 near-tie audit ({v} relink)', vm, capped=TR.VARIANTS[v].max_match_cost is not None)
     if name == 'micro':
         cs = np.load(d / 'T4_1_common_span_dist_calls.npz')
         got = np.array([TR.common_span_dist(cs['pa'][i], float(cs['la'][i]), cs['pb'][i], float(cs['lb'][i]))
@@ -493,6 +518,7 @@ def check_sleepy_events(events: list[int], ref_root: str, data_dir: str, inputs:
         lo, hi = lsa_start[b], lsa_start[b + 1]
         ref_vals = lsa['full_values'][lsa['full_offsets'][lo]:lsa['full_offsets'][hi]]
         chk.add(f'b{b} LSA matrices', np.concatenate([x.ravel() for x in mats]) if mats else np.zeros(0), ref_vals)
+        near_tie_audit(chk, f'b{b} T4.3 near-tie audit (fused relink)', mats)
         r0 = res.r0
         Ln, kn = G.arc_length_curvature(w.points, w.arm_point_offsets, 'nan')
         base = G.resample_base(w.points, w.arm_point_offsets)
@@ -674,6 +700,16 @@ def main(argv=None) -> int:
     for r in rows:
         if not r['ok']:
             print('FAIL', r['scope'], r['rep'], r['detail'])
+    audit = [r for r in rows if r.get('audit') == 'near_tie']
+    if audit:
+        n_lsa = sum(r['n_lsa'] for r in audit)
+        n_near = sum(r['n_near'] for r in audit)
+        mn = min(r['min_margin'] for r in audit)
+        print(f'near-tie audit: {n_lsa} LSA calls, {n_near} with decision margin < {NEAR_TIE:g} '
+              f'(reported, not failed), smallest margin {mn:.3g}')
+        for r in audit:
+            if r['n_near']:
+                print('NEAR-TIE', r['scope'], r['rep'], r['detail'], 'calls', r['near_calls'][:10])
     if args.json:
         args.json.write_text(_jd(rows, indent=1))
     return 1 if n_fail else 0

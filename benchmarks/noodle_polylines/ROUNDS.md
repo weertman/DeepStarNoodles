@@ -509,3 +509,194 @@ beforehand): 1.14 s profiled, against 20.5 s at `b41bd72`.
   - the `_segments` ops against numpy, with NaN, ±inf, -0.0, ties and segments up to 300 long.
 - `pytest tests/test_noodle_polylines*.py`: **86 passed** (70 + 16). `_reference.py`, the
   fixtures, the tolerances and `parity_check.py` are unchanged. The micro example runs.
+
+## Round 3: batched association (T4)
+
+### What changed and why
+
+The profile of a re-link at `a4ae126` (3 Sleepy segments, 9,424 arms, 623 µs/arm) confirmed the
+hotspot named at round 2. `_reference.common_span_dist` took 4.12 of the 4.59 s profiled (90%), as
+56,770 per-pair calls. Inside it, the inner `sample` took 2.34 s, `linspace` 0.64 s, `clip` 0.82 s,
+and the per-pair `np.linalg.norm` and `mean` overheads the rest. A Sleepy frame has about 10 arms
+against 11–13 active tracks, so each step evaluated about 120 pairs in Python. Every workload that
+re-links was about 99% tracker. The changes below keep every matrix, assignment and label
+bit-identical to the reference tracker. `linear_sum_assignment` is called on the same matrices, the
+frame loop stays sequential, and nothing is a closed form that only agrees within a tolerance.
+
+- **New `_assoc` module: the cost matrix as one block.**
+  - `common_span_dist` samples both arms at `linspace(0, lc, 12)` with `lc = min(la, lb)`. For the
+    shorter arm, `lc` is its own length, so its sample depends on that arm only. `arm_rows`
+    computes it once per arm, together with the arm's grid, its points as float64, `max(L, 1e-6)`
+    and a degenerate flag. Only the longer arm is interpolated per pair.
+  - `span_dist_rows` evaluates all n × m pairs of a step at once. It picks short and long rows with
+    `np.where` and computes the reference's `idx`, `i0 = clip(int(idx), 0, 10)`, `t` and
+    `(1 - t) * p[i0] + t * p[i0 + 1]` for the long arm. It then takes the point distance
+    `sqrt(dx*dx + dy*dy)`, the same unfused `add.reduce` of squares that `norm(axis=1)` uses, and
+    the mean as `add.reduce(axis=-1) / 12`, numpy's pairwise sum over the contiguous last axis, as in
+    `ndarray.mean`. x and y sit in separate column planes, so every elementwise step runs over
+    contiguous (n, m, 12) blocks; with x and y interleaved (an inner axis of length 2) a re-link was
+    about 25% slower. Points are gathered with flat `take` indices. The first version used
+    `take_along_axis`, which builds broadcast index grids and took about a third of a step.
+  - Pairs whose shorter arm has length ≤ 1e-6 (single-point and zero-length arms) go through the
+    reference function itself. These pairs use the tip-distance branch, which is a float32 BLAS dot.
+  - `embed_dist` is `sqrt(np.vecdot(D, D))` over the (n, m, 8) float32 differences. `np.linalg.norm`
+    of a float32 vector is `sqrt(x.dot(x))`, a BLAS `sdot`, and `np.vecdot` calls the same dot
+    routine for every pair: it matched 200,000 of 200,000 random vectors. An emulated FMA chain
+    matched 80%, a plain float32 sum 81% and `einsum` 86%.
+  - `augmented` builds the (n+m)² matrix with strided slice writes instead of `diag_indices`.
+- **Array-state tracker (`_assoc.ArrayTracker`, `_assoc.run`).** With `vel_alpha = 0` (the released
+  setting) and finite, bounded inputs, the reference velocity stays exactly zero, and a prediction
+  is the track's last shape (`poly + 0·dt`; only the sign of a zero can change, which no distance
+  sees). The tracks are then arrays in insertion order: arm rows, float32 embedding, age and ID.
+  Insertion order is ascending ID, because tracks are appended with increasing IDs and only ever
+  removed. Matching, the embedding EMA (`(1 - α)·e + α·e_i` in float32, gated on the same distance
+  as the cost), ageing, births and retirement are array updates. The augmented matrix's row
+  solution is `arange(n + m)`, as scipy documents for square input, so the kept pairs are the first
+  n columns below m. The tracker checks the inputs once per pass, in 65,536-arm blocks. A velocity
+  term, float64 or non-finite inputs run the reference tracker unchanged. Arm rows are built per
+  block of about 32,768 arms (whole frames), so the extra memory is about 16 MB, not 500 B per arm
+  of the sequence.
+- **`relink`, `step_costs`, `cost_matrix` and `diagnostics` use it.** `cost_matrix` is now the
+  batched block (the per-pair loop is gone). `step_costs` runs the array tracker up to the frame;
+  the 'sorted' and 'insertion' track orders are the same order.
+- **Stored-ID fast path.** `compute_all` with stored IDs already skipped the tracker. A new test
+  replaces `tracker_inputs` and the tracker pass with functions that raise, to prove it.
+- **T4.5 counters as sorted-key joins (`tracking._Sequence`).** Continuation, forward–reverse link
+  agreement, jumps, births, arm-weighted lifetimes and stride precision were per-frame Python sets
+  (`frame_measures`, `links`). They are now computed over the whole sequence. Each arm's partner,
+  the arm one (or g) sequence positions earlier with the same label, is a `searchsorted` on (position,
+  label) keys. Births and lifetimes come from first and last appearances (`np.unique`). The counts
+  per state are `bincount`s, in the same key order: 'all', then the states in order of first
+  appearance. These give the same integers because a frame's labels are unique. The code checks
+  this and raises if a processed frame has a missing or repeated label, which the tracker cannot
+  produce. Each pass's finiteness check runs once per configuration instead of once per pass.
+- **Near-tie audit.** `tracking.assignment_margin(matrix)` gives the decision margin of one tracker
+  assignment: how much more the cheapest assignment with a different set of kept (arm, track)
+  pairs costs. Any other assignment drops at least one edge of the optimum that touches an arm or
+  a track. So the margin is the minimum over re-solves with one such edge forbidden; swaps among
+  dummy or gated entries are skipped. `parity_check.py` gains an information-only audit. It
+  computes the margin of every LSA call in the flipping re-links (fused, shape-only and uncapped)
+  and the Sleepy Fig 5 event re-links, and lists margins below 1e-6. No existing check, tolerance or
+  pass/fail rule changed.
+
+### Run
+
+| | |
+|---|---|
+| Date | 2026-11-02 |
+| CPU | Intel Xeon W-3365, 64 cores (shared workstation, load average 2–6) |
+| Software | Python 3.12.13, numpy 2.4.3, scipy 1.17.1 (scipy-openblas 0.3.31) |
+| Before | `a4ae126` (round 2), run with the same `bench.py` |
+| After | this commit |
+
+```
+# before (a4ae126): the tracker kernels take ~100 s per subset call, so 4 jobs, 1 repeat on synthetic
+# and on the 10-pass diagnostics
+OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,subset,synthetic \
+    --data-dir RUNS/paper_retrace_f39dc82b --synthetic-arms 1000000 --repeats 5 --synthetic-repeats 1 \
+    --expensive-repeats 1 --kernels "T4.4,T4.5,E2E compute_all fig5" --jobs 4
+# after
+OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,subset,synthetic \
+    --data-dir RUNS/paper_retrace_f39dc82b --synthetic-arms 1000000 --repeats 5 --synthetic-repeats 5 \
+    --kernels "T0.2 resample_tip,T4.4,T4.5,E2E compute_all fig5" --jobs 1 --profile profile_after.txt
+```
+
+- **Timings.** After: best of 5 after one warm-up, each job in a fresh single-threaded process,
+  `--jobs 1`. Before: best of 5 on micro and subset, but a single timed run (after one warm-up) for
+  the synthetic input and for T4.5. At ~600 µs/arm a 1e6-arm call takes 10 minutes. The before
+  run used 4 concurrent jobs, and the after run overlapped part of it, so up to 5 single-threaded
+  processes shared 64 cores. The unchanged kernels in the after run (resample_tip 1.99 µs/arm
+  synthetic, against 1.95 at round 2; fig5 stored-ID synthetic 5.62, against 5.56) are within 3% of
+  round 2. Read the speed-ups as ±10%.
+- **Inputs.** The same as rounds 1 and 2: micro is 1,226 arms, the subset 173,434 arms (7 flipping
+  clips and 36 Sleepy segments), and the synthetic input the subset tiled to 1,000,416 arms. T4.5
+  is not run on the synthetic input (`--skip-expensive-on synthetic`, the default).
+- **Memory.** Peak RSS is whole-process VmHWM in MB (input build plus kernel), before → after.
+
+### Per kernel (before → after, CPU µs/arm)
+
+| Kernel | Micro | Subset | Synthetic | Speed-up, subset / synthetic | Peak RSS MB, subset; synthetic | CPU-h per camera-year |
+|---|---:|---:|---:|---:|---:|---:|
+| **T4.4 relink (1 pass, includes the T0.2 tip resample)** | 434.3 → 19.4 | 589.3 → 17.0 | 598.9 → 16.3 | **34.7× / 36.7×** | 186 → 184; 417 → 461 | 49.1 → **1.42** |
+| **T4.5 diagnostics (10 passes)** | 2,950.9 → 109.6 | 3,968.6 → 100.6 | — | **39.5×** / — | 178 → 178 | 330.7 → **8.4** |
+| **E2E compute_all fig5 + relink** | 442.5 → 26.9 | 604.8 → 23.0 | 596.6 → 21.8 | **26.3× / 27.4×** | 185 → 188; 446 → 466 | 50.4 → **1.92** |
+| E2E compute_all fig5 (stored IDs)* | 8.01 → 8.46 | 415.9 → 16.1* | 5.58 → 5.62 | 25.8×* / 1.0× | 176 → 176; 444 → 449 | 0.47 → 0.47 (synthetic) |
+| *unchanged:* T0.2 resample_tip (tracker input) | — → 3.04 | — → 2.60 | — → 1.99 | (round 2: 2.79 / 1.95) | 183; 424 | 0.22 |
+
+\* The subset's "stored IDs" row re-links its 36 Sleepy segments, which have no stored IDs, so it
+moves with the tracker. On the synthetic input every arm has a stored ID and the tracker is not run;
+that row did not change (5.6 µs/arm).
+
+One re-link pass is now about 14 µs/arm of tracker on top of the 2–3 µs/arm tip resample, about
+110 µs per subset frame (8 arms on average). Under cProfile a step splits into about 75 µs for the
+shape block, 9 µs for the embedding block, 6 µs for `linear_sum_assignment` and 29 µs of
+bookkeeping. The 10-pass diagnostics are 6.9 full passes of work, because the stride passes feed
+1/2 to 1/16 of the frames. The counters were per-frame Python sets. All of them (three variants plus
+four strides) now take about 1.7 µs/arm on 12 Sleepy segments.
+
+Peak RSS rose by up to 44 MB on the 1e6-arm synthetic re-link (417 → 461 MB), and by 0–20 MB
+elsewhere. The cause is the per-block arm rows (32,768 arms × 63 float64 = 16.5 MB) and their
+temporaries, plus the (A,) int64 arm list of the processed frames (8 B per arm). Apart from that
+list, the increase is bounded by the block, not the sequence.
+
+### Camera-year projection (3e8 arms, one core)
+
+| Workload | Round 2 (`a4ae126`, this run) | Round 3 |
+|---|---:|---:|
+| Fig 5 representations with stored IDs (synthetic basis) | 0.47 CPU-h | 0.47 CPU-h |
+| Fig 4D representations with stored IDs (synthetic basis, not re-timed) | 0.37 CPU-h | 0.37 CPU-h |
+| Fig 5 representations with a re-link (subset basis) | 50.4 CPU-h | **1.9 CPU-h** |
+| One tracker pass (subset basis, includes the tip resample) | 49.1 CPU-h | **1.4 CPU-h** |
+| Fig 6D diagnostics (10 passes, subset basis) | 330.7 CPU-h | **8.4 CPU-h** |
+
+Against v0 (518f47e, round-1 harness), a camera-year re-link plus Fig 5 went from 54 to 1.9 CPU-h,
+and the Fig 6D diagnostics from 343 to 8.4 CPU-h.
+
+### Hotspots after round 3
+
+The profile covers `compute_all('fig5')` plus `relink` on the subset: 6.97 s profiled (31,670
+tracker steps), against 287 s at round 1.
+
+| Function | Self s | Cumulative s | Note |
+|---|---:|---:|---|
+| `_assoc.span_dist_rows` | 1.19 | 2.36 | the (n, m, 12) shape block; about 30 numpy calls per step on ~1,500-element arrays |
+| `_assoc.ArrayTracker.step` | 0.91 | 4.84 | bookkeeping: about 40 small array ops per step |
+| `_assoc._index`, `_lerp` | 0.67 | 0.71 | part of the shape block |
+| `_assoc.embed_dist` | 0.26 | 0.30 | (n, m, 8) float32 differences and `vecdot` |
+| `linear_sum_assignment` | 0.19 | 0.19 | 6 µs per call, unchanged |
+| `_csr.seg_search`, `_resample_tip_block` | 0.56 | 0.92 | the T0.2 tip resample (tracker input) |
+| `np.linalg.svd` (T3.1) | 0.21 | 0.21 | the stacked 2×2 Kabsch fit of the Fig 5 path |
+
+The tracker is now Python-overhead bound: per step, about half the time is numpy call overhead on
+small blocks and half arithmetic. The next large gain would need a compiled step loop, which the
+numpy + scipy dependency rule excludes, or batching across independent sequences. Several
+sequences can step in lock-step with padded blocks, because their trackers do not interact.
+
+### Parity and tests at round 3
+
+- `parity_check.py`, full gate (micro, 7 flipping clips, and the Sleepy subset with all 18 Fig 6D
+  sequences): **4,213 checks, 0 failed, 4,213 bit-identical**, the same as rounds 1 and 2. The gate
+  compares every LSA matrix value, row and column of the re-links against the figure-script
+  references. The T4.5 rows (counters, lifetimes, n_ids, strides and pooled rates, for all three
+  variants) all match exactly.
+- **Near-tie audit (new, information only):** 39,953 LSA calls, **0 with a decision margin below
+  1e-6**; the smallest margin is 7.6e-4 cost units. No assignment in the gate is within reach of a
+  last-bit change.
+- New `tests/test_noodle_polylines_assoc.py` (22 tests) checks the batched code against the
+  per-pair and per-frame code it replaced, bit for bit. Those loops are kept in the test as oracles
+  and call the reference tracker, `common_span_dist`, `frame_measures` and `links`. The cases cover:
+  - the shape block for k = 12, 5 and 2, with equal lengths, zero lengths and lengths just below and
+    above 1e-6, and the embedding block in float32 and float64;
+  - `cost_matrix`, the augmented matrix, and every variant's re-link in both directions, comparing
+    each LSA matrix and solution;
+  - a 300-arm frame (more than 256 rows), strided and sparse frame sets, and block sizes of 1, 37
+    and 32,768 arms;
+  - the reference fallbacks: a velocity term, NaN-origin frames (both implementations raise the
+    same `linear_sum_assignment` error) and a float64 identity;
+  - `step_costs` against the Fig 6A script function in both track orders;
+  - the T4.5 counters with states that include None, time and frame indices, gaps and empty frames;
+  - `assignment_margin` on constructed ties, near ties and gated cases;
+  - the stored-ID path, which never touches the tracker.
+- `pytest tests/test_noodle_polylines*.py`: **108 passed** (86 + 22). `_reference.py`, the
+  fixtures and the tolerances are unchanged. `parity_check.py` only gained the audit. The micro
+  example runs.

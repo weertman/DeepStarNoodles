@@ -146,6 +146,7 @@ R0 is in source px.
 | T4.1 | pair | `tracking.common_span_dist` | mean point distance over the arc span both arms share, from the tip | 6A |
 | T4.2 | F | `tracking.cost_matrix`, `tracking.step_costs` | `d + 2.0·‖e_i − e_j‖`; NaN where d > 120 | 6A, 6C |
 | T4.3 | F | `tracking.assign` | Hungarian assignment augmented with "unmatched" options at 90/2 | 6A |
+| (audit) | F | `tracking.assignment_margin` | how much more the cheapest assignment with different kept pairs costs; a near-tie check, not a representation | — |
 | T4.4 | S | `tracking.relink`, `tracking.track_ids` | sequential tracker; frames without arms are skipped, so `max_age = 16` counts arm-bearing updates; IDs start at 0 | 4D, 4E, 5B–D, 6A–D |
 | T4.5 | S | `tracking.diagnostics`, `rates`, `pooled` | continuation, forward–reverse Jaccard, jumps (> 30° with both radii ≥ 25 crop px), arm-weighted lifetime, stride precision (g = 2, 4, 8, 16), new-ID rate. Frame index: `frame_index` for flipping, `round(t − t0)` for Sleepy (`by='auto'` reads `meta['source_format']`); origin float32 for flipping, float64 otherwise (`origin_dtype='auto'`). The resolved choices are returned. | 6D |
 
@@ -153,7 +154,20 @@ R0 is in source px.
 re-links otherwise. On released flipping data the stored IDs equal a full-clip re-link
 exactly. A cold-start re-link of an excerpt differs: on the micro example it agrees with
 the stored IDs on 1,179 of 1,226 arms. Every output records which IDs it used
-(`track_id_source`).
+(`track_id_source`). With stored IDs, `compute_all` does not touch the tracker or its inputs.
+
+**How the tracker runs.** With the released settings (`vel_alpha = 0`, float32 inputs, all finite)
+a re-link uses an array-state port of the tracker (`noodle_polylines._assoc`). Each step computes the
+whole (arms × tracks) shape and embedding blocks at once, builds the same augmented matrix and calls
+`linear_sum_assignment` on it, so every matrix, assignment and label equals the reference tracker's
+bit for bit (the parity gate compares all of them). The shorter arm of a pair is sampled on its own
+grid, which is computed once per arm; only the longer arm is interpolated per pair. Embedding
+distances use `np.vecdot`, which calls the same BLAS dot as `np.linalg.norm`. Arms whose length is
+at most 1e-6 take the reference's tip-distance branch through the reference function. Any other
+setting (a velocity term, non-finite or float64 inputs) runs the reference tracker unchanged. The
+frame loop stays sequential; arm rows are built per block of about 32,768 arms. The Fig 6D counters
+(continuation, agreement, jumps, births, lifetimes, stride precision) are sorted-key joins over the
+whole sequence instead of per-frame sets.
 
 ### R0 policies (T0.7)
 
@@ -266,7 +280,9 @@ The parity gate has three tolerance classes:
 - **≤ 1e-5 px:** the float32 tip-first resample.
 - **rtol 1e-9:** every other float, with identical NaN positions.
 
-The gate also reports how many outputs are bit-identical.
+The gate also reports how many outputs are bit-identical, and runs a near-tie audit: the decision
+margin (`tracking.assignment_margin`) of every tracker assignment in its re-links, with margins below
+1e-6 listed. The audit informs; it never fails the gate.
 `benchmarks/noodle_polylines/ROUNDS.md` records the timings of each optimisation round.
 
 ## Not included

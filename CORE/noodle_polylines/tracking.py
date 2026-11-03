@@ -13,6 +13,10 @@ to frame on body-relative, tip-anchored 12-point polylines:
 * T4.5 :func:`diagnostics` - continuation, forward-reverse agreement, jumps, lifetimes, stride precision.
 
 Released data stores ``track_id``; :func:`track_ids` uses it unless asked to re-link.
+
+Re-links with the released settings run the array-state tracker of :mod:`noodle_polylines._assoc`
+(batched cost blocks, the same ``linear_sum_assignment`` calls, bit-identical labels); other settings
+run the reference tracker. :func:`assignment_margin` measures how close an assignment is to a tie.
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ from dataclasses import asdict, dataclass, replace
 
 import numpy as np
 
+from . import _assoc as A
 from . import _reference as R
 from . import geometry as G
 from .container import ContainerError, PolylineContainer
@@ -76,15 +81,24 @@ def cost_matrix(polys: np.ndarray, lengths: np.ndarray, embeds: np.ndarray, trac
     """T4.2 (n,m) shape distance, embedding distance and gated cost (NaN where shape > gate).
 
     ``polys`` (n,k,2) f32 detections, ``lengths`` (n,) f32; ``track_*`` the tracks' last observations
-    (with ``vel_alpha = 0`` a track's prediction is its last shape).
+    (with ``vel_alpha = 0`` a track's prediction is its last shape). The whole (n, m) block is computed
+    at once (:mod:`noodle_polylines._assoc`), with the values of :func:`common_span_dist` and
+    ``np.linalg.norm`` pair by pair.
     """
+    polys, track_polys = np.asarray(polys), np.asarray(track_polys)
+    lengths = np.asarray(lengths, np.float64).reshape(-1)
+    track_lengths = np.asarray(track_lengths, np.float64).reshape(-1)
     n, m = len(polys), len(track_polys)
-    shape = np.empty((n, m))
-    emb = np.empty((n, m))
-    for i in range(n):
-        for j in range(m):
-            shape[i, j] = R.common_span_dist(polys[i], float(lengths[i]), track_polys[j], float(track_lengths[j]))
-            emb[i, j] = float(np.linalg.norm(embeds[i] - track_embeds[j]))
+    if n and m:
+        k = polys.shape[1]
+
+        def deg_fn(i, j):
+            return R.common_span_dist(polys[i], float(lengths[i]), track_polys[j], float(track_lengths[j]))
+
+        shape = A.span_dist_rows(A.arm_rows(polys, lengths, k), A.arm_rows(track_polys, track_lengths, k), k, deg_fn)
+        emb = A.embed_dist(embeds, track_embeds)
+    else:
+        shape, emb = np.zeros((n, m)), np.zeros((n, m))
     cost = np.where(shape <= config.shape_gate, shape + config.embed_weight * emb, np.nan)
     return {'shape_distance': shape, 'embedding_distance': emb, 'cost': cost}
 
@@ -92,6 +106,50 @@ def cost_matrix(polys: np.ndarray, lengths: np.ndarray, embeds: np.ndarray, trac
 def assign(cost: np.ndarray, max_match_cost: float | None = 90.0) -> np.ndarray:
     """T4.3 (pairs, 2) int64 (row, column) assignment of a gated cost matrix (NaN = not allowed)."""
     return np.asarray(R.assign(cost, max_match_cost), np.int64).reshape(-1, 2)
+
+
+def assignment_margin(matrix: np.ndarray, capped: bool = True, n: int | None = None) -> float:
+    """Decision margin of one tracker assignment (near-tie audit): how much more the cheapest assignment
+    of ``matrix`` whose *kept* pairs differ costs than the optimum (``inf`` if none exists).
+
+    ``matrix`` is what the tracker passed to ``linear_sum_assignment`` (an ``assign_hook`` sees it): the
+    augmented (n+m)^2 matrix when ``capped`` (``n`` arms; inferred as the zeros of the last, dummy row
+    when omitted), else the plain (n, m) cost. Kept pairs are arm-track pairs with cost < 1e9. Every
+    other assignment drops at least one edge of the optimum that touches an arm or a track, so the
+    margin is the minimum over the re-solves with one such edge forbidden; alternatives that keep the
+    same pairs (swaps among dummy or gated entries) are skipped. A margin below ~1e-6 means a last-bit
+    change in a cost could flip the decision."""
+    from scipy.optimize import linear_sum_assignment
+
+    M = np.asarray(matrix, np.float64)
+    if capped:
+        N = M.shape[0]
+        n = int(np.count_nonzero(M[-1] == 0.0)) if n is None else n
+        m = N - n
+    else:
+        n, m = M.shape
+
+    def kept(rr, cc):
+        sel = (rr < n) & (cc < m)
+        sel &= M[rr, cc] < A.BIG
+        return set(zip(rr[sel].tolist(), cc[sel].tolist()))
+
+    rr, cc = linear_sum_assignment(M)
+    best = float(M[rr, cc].sum())
+    ref = kept(rr, cc)
+    margin = np.inf
+    for r, col in zip(rr.tolist(), cc.tolist()):
+        if r >= n and col >= m:
+            continue                       # dummy-dummy edge: free to permute
+        alt = M.copy()
+        alt[r, col] = np.inf
+        try:
+            r2, c2 = linear_sum_assignment(alt)
+        except ValueError:                 # no assignment avoids this edge
+            continue
+        if kept(r2, c2) != ref:
+            margin = min(margin, float(alt[r2, c2].sum()) - best)
+    return margin
 
 
 def tracker_inputs(c: PolylineContainer, origin_dtype: str = 'float64', k: int = 12
@@ -139,20 +197,45 @@ def relink(c: PolylineContainer, config: TrackerConfig = RELEASED, origin_dtype:
     non-finite origin) are skipped and do not age tracks. ``reverse`` runs them backwards (Fig 6D).
     ``step_index`` (F,) is the value passed to ``step`` (default ``frame_index``; inert with vel_alpha 0).
     """
-    sampled, lengths, embeds = inputs if inputs is not None else tracker_inputs(c, origin_dtype, config.k)
+    inputs = inputs if inputs is not None else tracker_inputs(c, origin_dtype, config.k)
     all_pos = np.arange(c.n_frames) if frames is None else np.asarray(frames, np.int64)
     pos = _frames(c, all_pos, require_finite_origin)
-    idx = c.frame_index if step_index is None else np.asarray(step_index)
-    tracker = FusedTracker(config, assign_hook=assign_hook)
+    return _run(c, config, inputs, pos, reverse, assign_hook, step_index, all_pos)
+
+
+def _run(c: PolylineContainer, config: TrackerConfig, inputs: tuple, pos: np.ndarray, reverse: bool = False,
+         assign_hook=None, step_index=None, all_pos=None, fast: bool | None = None) -> np.ndarray:
+    """One tracker pass over frame positions ``pos`` (frames with arms). ``fast``: None checks whether the
+    array tracker applies (:func:`noodle_polylines._assoc.fast_path_ok`); True/False forces the choice
+    (callers pass True only after that check)."""
+    sampled, lengths, embeds = inputs
     out = np.full(c.n_arms, -1, np.int64)
     fo = c.frame_arm_offsets
     order = pos[::-1] if reverse else pos
+    if fast is None:
+        fast = A.fast_path_ok(config, sampled, lengths, embeds, _arms_of(fo, pos))
+    if fast:
+        # array-state tracker: same matrices, same assignments (step_index is inert with vel_alpha 0)
+        A.run(config, sampled, lengths, embeds, fo, order, out, assign_hook=assign_hook)
+        return out
+    all_pos = pos if all_pos is None else all_pos
+    idx = c.frame_index if step_index is None else np.asarray(step_index)
+    tracker = FusedTracker(config, assign_hook=assign_hook)
     last = int(idx[all_pos[-1]]) if len(all_pos) else 0
     for f in order:
         a0, a1 = fo[f], fo[f + 1]
         step = last - int(idx[f]) if reverse else int(idx[f])
         out[a0:a1] = tracker.step(step, sampled[a0:a1], lengths[a0:a1], embeds[a0:a1])
     return out
+
+
+def _arms_of(fo: np.ndarray, pos: np.ndarray) -> np.ndarray:
+    """Arm indices of frame positions ``pos``, in order."""
+    a0, a1 = fo[pos], fo[pos + 1]
+    cnt = a1 - a0
+    start = np.zeros(len(pos), np.int64)
+    np.cumsum(cnt[:-1], out=start[1:])
+    return np.repeat(a0 - start, cnt) + np.arange(int(cnt.sum()), dtype=np.int64)
 
 
 def track_ids(c: PolylineContainer, mode: str = 'auto', **relink_kw) -> tuple[np.ndarray, str]:
@@ -177,12 +260,23 @@ def step_costs(c: PolylineContainer, frame: int, config: TrackerConfig = RELEASE
     the assignment pairs and the tracker's labels for that frame."""
     sampled, lengths, embeds = tracker_inputs(c, origin_dtype, config.k)
     pos = _frames(c, frames, True)
-    tracker = FusedTracker(config)
     fo = c.frame_arm_offsets
-    for f in pos[pos < frame]:
+    prev = pos[pos < frame]
+    a0, a1 = fo[frame], fo[frame + 1]
+    if A.fast_path_ok(config, sampled, lengths, embeds, _arms_of(fo, np.append(prev, frame))):
+        # the array tracker keeps its tracks in insertion order, which is ascending ID: both orders agree
+        tr = A.run(config, sampled, lengths, embeds, fo, prev, np.full(c.n_arms, -1, np.int64))
+        res = cost_matrix(sampled[a0:a1], lengths[a0:a1], embeds[a0:a1], tr.track_polys(), tr.track_lengths(),
+                          tr.emb, config)
+        res['track_ids'] = tr.tid.copy()
+        res['assignment'] = assign(res['cost'], config.max_match_cost)
+        res['labels'] = tr.step(A.arm_rows(sampled[a0:a1], lengths[a0:a1], config.k), embeds[a0:a1],
+                                sampled[a0:a1], lengths[a0:a1])
+        return res
+    tracker = FusedTracker(config)
+    for f in prev:
         tracker.step(int(c.frame_index[f]), sampled[fo[f]:fo[f + 1]], lengths[fo[f]:fo[f + 1]], embeds[fo[f]:fo[f + 1]])
     active = sorted(tracker.tracks.items()) if track_order == 'sorted' else list(tracker.tracks.items())
-    a0, a1 = fo[frame], fo[frame + 1]
     preds = [tracker._predict(t, int(c.frame_index[frame])) for _, t in active]
     res = cost_matrix(sampled[a0:a1], lengths[a0:a1], embeds[a0:a1], preds, [t['len'] for _, t in active],
                       [t['embed'] for _, t in active], config)
@@ -230,10 +324,6 @@ def sequence_index(c: PolylineContainer, by: str = 'auto') -> np.ndarray:
     return np.array([int(round(x - t[0])) for x in t], np.int64)
 
 
-def _labels_per_frame(ids: np.ndarray, fo: np.ndarray, pos: np.ndarray) -> list[list[int]]:
-    return [[int(x) for x in ids[fo[f]:fo[f + 1]] if x >= 0] for f in pos]
-
-
 def diagnostics(c: PolylineContainer, frames: np.ndarray | None = None, states=None, fps: float | None = None,
                 index: np.ndarray | None = None, variants: dict | None = None, strides=STRIDES,
                 origin_dtype: str = 'auto', by: str = 'auto') -> dict:
@@ -265,50 +355,179 @@ def diagnostics(c: PolylineContainer, frames: np.ndarray | None = None, states=N
         return _empty_diagnostics(variants, strides, by, origin_dtype)
     fo = c.frame_arm_offsets
     angle, radius = G.tip_polar(c.points, c.arm_point_offsets, fo, c.body_origin_model, origin_dtype=origin_dtype)
-    polar = [(angle[fo[f]:fo[f + 1]], radius[fo[f]:fo[f + 1]]) for f in pos]
-    seq_frames = [{'index': int(idx_all[f]), 'arms': [None] * int(fo[f + 1] - fo[f]),
-                   'state': None if states is None else states[f]} for f in pos]
     inputs = tracker_inputs(c, origin_dtype)
-    idx = np.array([fr['index'] for fr in seq_frames])
-    res: dict = {'n_frames': len(pos), 'n_arms': int(sum(len(fr['arms']) for fr in seq_frames)),
-                 'median_arms': float(np.median([len(fr['arms']) for fr in seq_frames])),
-                 'duration_s': float((idx[-1] - idx[0] + 1) / fps), 'runs': {},
+    seq = _Sequence(fo, pos, idx_all, states)
+    res: dict = {'n_frames': len(pos), 'n_arms': int(seq.cnt.sum()), 'median_arms': float(np.median(seq.cnt)),
+                 'duration_s': float((seq.idx[-1] - seq.idx[0] + 1) / fps), 'runs': {},
                  'index_by': by, 'origin_dtype': origin_dtype}
+    run_pos = _frames(c, pos, False)              # every pass feeds the frames with arms
+    sub_pos = {g: _frames(c, pos[::g], False) for g in (strides or ())}
+    fast = {}
+
+    def run(cfg, frames_, reverse=False):
+        if cfg not in fast:   # one finiteness check per configuration (the pass frames are a subset)
+            fast[cfg] = A.fast_path_ok(cfg, *inputs, seq.arms)
+        return _run(c, cfg, inputs, frames_, reverse, step_index=idx_all, all_pos=pos, fast=fast[cfg])
+
     for variant, config in variants.items():
         cfg = config if isinstance(config, TrackerConfig) else TrackerConfig.from_dict(config)
-        fwd_ids = relink(c, cfg, frames=pos, inputs=inputs, step_index=idx_all, require_finite_origin=False)
-        rev_ids = relink(c, cfg, frames=pos, inputs=inputs, step_index=idx_all, reverse=True,
-                         require_finite_origin=False)
+        fwd_ids = run(cfg, run_pos)
+        rev_ids = run(cfg, run_pos, reverse=True)
         res['runs'][f'{variant}_fwd'], res['runs'][f'{variant}_rev'] = fwd_ids, rev_ids
-        fwd, rev = _labels_per_frame(fwd_ids, fo, pos), _labels_per_frame(rev_ids, fo, pos)
-        span: dict[int, list[int]] = {}
-        for k, labs in enumerate(fwd):
-            for lab in labs:
-                span.setdefault(lab, [idx[k], idx[k]])[1] = idx[k]
-        life = {lab: (b - a + 1) / fps for lab, (a, b) in span.items()}
-        by_state = {k: {kk: int(vv) for kk, vv in v.items()}
-                    for k, v in R.frame_measures(seq_frames, fwd, rev, polar).items()}
-        res[variant] = {'by_state': by_state, 'n_ids': len(span),
-                        'arm_lifetime_s': np.array([life[lab] for labs in fwd for lab in labs], np.float32)}
+        res[variant] = seq.measures(fwd_ids[seq.arms], rev_ids[seq.arms], angle[seq.arms], radius[seq.arms], fps)
         if variant == 'fused' and strides:
+            fwd = fwd_ids[seq.arms]
             st = {}
             for g in strides:
-                sub_pos = pos[::g]
-                sub_ids = relink(c, cfg, frames=sub_pos, inputs=inputs, step_index=idx_all,
-                                 require_finite_origin=False)
+                sub_ids = run(cfg, sub_pos[g])
                 res['runs'][f'{variant}_fwd_g{g}'] = sub_ids
-                sub = _labels_per_frame(sub_ids, fo, sub_pos)
-                sub_idx = idx[::g]
-                tp = n_sub = n_full = 0
-                for m in range(len(sub) - 1):
-                    if sub_idx[m + 1] - sub_idx[m] != g:
-                        continue
-                    k0, k1 = m * g, (m + 1) * g
-                    ls, lf = R.links(sub[m], sub[m + 1]), R.links(fwd[k0], fwd[k1])
-                    tp += len(ls & lf); n_sub += len(ls); n_full += len(lf)
-                st[g] = {'agree': tp, 'sub_links': n_sub, 'full_links': n_full}
+                st[g] = seq.stride_agreement(g, fwd, sub_ids)
             res['strides'] = st
     return res
+
+
+class _Sequence:
+    """The frames of one diagnostics sequence, flattened: arms in sequence order (frame k, then arm
+    order), with each arm's sequence position ``k`` and within-frame index. The counters of
+    ``frame_measures`` / ``analyse`` (prepare_figure_06_stats.py:238-315) are computed with sorted
+    (position, label) keys instead of per-frame sets; they give the same integers because a frame's
+    labels are unique (one arm per track and step) and every arm of a processed frame has one."""
+
+    def __init__(self, fo: np.ndarray, pos: np.ndarray, idx_all: np.ndarray, states):
+        self.pos = pos
+        self.K = K = len(pos)
+        self.idx = np.array([int(idx_all[f]) for f in pos], np.int64)
+        self.cnt = (fo[pos + 1] - fo[pos]).astype(np.int64)
+        self.arms = _arms_of(fo, pos)
+        self.k = np.repeat(np.arange(K, dtype=np.int64), self.cnt)
+        start = np.zeros(K, np.int64)
+        np.cumsum(self.cnt[:-1], out=start[1:])
+        self.start = start
+        self.within = np.arange(len(self.arms), dtype=np.int64) - start[self.k]
+        # state codes in first-appearance order ('all' is code -1 and always first)
+        self.state_names: list = []
+        codes = np.full(K, -1, np.int64)
+        if states is not None:
+            seen: dict = {}
+            for q, f in enumerate(pos):
+                st = states[f]
+                if st is None:
+                    continue
+                code = seen.get(st)
+                if code is None:
+                    code = seen[st] = len(self.state_names)
+                    self.state_names.append(st)
+                codes[q] = code
+        self.codes = codes
+
+    # ------------------------------------------------------------------ joins
+    def _keys(self, labels: np.ndarray, k: np.ndarray, base: int) -> np.ndarray:
+        return k * base + labels
+
+    def partner(self, labels: np.ndarray, k: np.ndarray, query: np.ndarray, back: int) -> np.ndarray:
+        """For each query arm (index into the flattened arms), the flattened index of the arm with the same
+        label ``back`` sequence positions earlier, or -1."""
+        base = int(labels.max()) + 1 if len(labels) else 1
+        keys = self._keys(labels, k, base)
+        order = np.argsort(keys, kind='stable')
+        sk = keys[order]
+        q = self._keys(labels[query], k[query] - back, base)
+        at = np.searchsorted(sk, q)
+        hit = at < len(sk)
+        hit[hit] = sk[at[hit]] == q[hit]
+        out = np.full(len(query), -1, np.int64)
+        out[hit] = order[at[hit]]
+        return out
+
+    def _check(self, labels: np.ndarray) -> None:
+        if len(labels) and labels.min() < 0:
+            raise ContainerError('diagnostics: a processed frame has an arm without a track label')
+        if len(labels) > 1:
+            key = self.k * (int(labels.max()) + 1) + labels
+            if len(np.unique(key)) != len(key):
+                raise ContainerError('diagnostics: a label occurs twice in one frame')
+
+    def _by_state(self, per_frame: dict[str, np.ndarray], frame_of: dict[str, np.ndarray]) -> dict:
+        """Sum per-frame counters into 'all' and each state (frame_of: which frame's state counts)."""
+        names = ('continued', 'continuation_total', 'link_agree', 'link_union', 'links', 'jumps', 'arms',
+                 'births')
+        out = {'all': {n: int(per_frame[n].sum()) for n in names}}
+        S = len(self.state_names)
+        if S:
+            sums = {}
+            for n in names:
+                code = self.codes[frame_of[n]]
+                ok = code >= 0
+                sums[n] = np.bincount(code[ok], weights=per_frame[n][ok], minlength=S)
+            for s, st in enumerate(self.state_names):
+                out[st] = {n: int(round(sums[n][s])) for n in names}
+        return out
+
+    # ------------------------------------------------------------------ Fig 6D counters
+    def measures(self, fwd: np.ndarray, rev: np.ndarray, angle: np.ndarray, radius: np.ndarray, fps: float) -> dict:
+        """``by_state`` counters, ``n_ids`` and ``arm_lifetime_s`` of one forward / reverse pair of passes
+        (labels per flattened arm)."""
+        self._check(fwd)
+        self._check(rev)
+        K, k = self.K, self.k
+        # births: arms whose label first appears at this frame; lifetimes from first / last appearance
+        uniq, first, inv = np.unique(fwd, return_index=True, return_inverse=True)
+        last = len(fwd) - 1 - np.unique(fwd[::-1], return_index=True)[1]
+        births = np.bincount(k[first], minlength=K)
+        life = (self.idx[k[last]] - self.idx[k[first]] + 1) / fps
+        # consecutive frame pairs (k, k+1): index step 1, both with arms
+        pair_ok = np.zeros(K, bool)
+        if K > 1:
+            pair_ok[1:] = (np.diff(self.idx) == 1) & (self.cnt[:-1] > 0) & (self.cnt[1:] > 0)
+        q = np.flatnonzero(pair_ok[k])                       # arms of the later frame of a valid pair
+        pf = self.partner(fwd, k, q, 1)
+        pr = self.partner(rev, k, q, 1)
+        linked = pf >= 0
+        i, j = pf[linked], q[linked]
+        r_ok = (radius[i] >= JUMP_MIN_RADIUS) & (radius[j] >= JUMP_MIN_RADIUS)
+        jump = np.zeros(len(q), bool)
+        jump[linked] = r_ok & (np.abs((angle[j] - angle[i] + 180) % 360 - 180) > JUMP_DEG)
+        agree = linked & (pf == pr)
+        kq = k[q]
+        per_frame = {
+            'continued': np.bincount(kq, weights=linked, minlength=K),
+            'continuation_total': np.where(pair_ok, self.cnt, 0),
+            'link_agree': np.bincount(kq, weights=agree, minlength=K),
+            'link_union': np.bincount(kq, weights=linked.astype(np.int64) + (pr >= 0) - agree, minlength=K),
+            'links': np.bincount(kq, weights=linked, minlength=K),
+            'jumps': np.bincount(kq, weights=jump, minlength=K),
+            'arms': self.cnt, 'births': births}
+        frame = np.arange(K)
+        by_state = self._by_state(per_frame, dict.fromkeys(per_frame, frame))
+        return {'by_state': by_state, 'n_ids': len(uniq), 'arm_lifetime_s': life[inv].astype(np.float32)}
+
+    def stride_agreement(self, g: int, fwd: np.ndarray, sub_ids: np.ndarray) -> dict:
+        """Stride precision at stride ``g``: links of the ``pos[::g]`` pass between sub-frames ``g`` index
+        steps apart, against the full forward pass's links between the same two frames."""
+        sub_k = np.arange(0, self.K, g)
+        M = len(sub_k)
+        ok = np.zeros(M, bool)
+        if M > 1:
+            ok[1:] = (self.idx[sub_k[1:]] - self.idx[sub_k[:-1]]) == g
+        # arms of the sub-sequence, in order, with their sub position m
+        is_sub = (self.k % g) == 0
+        sub_arm = np.flatnonzero(is_sub)
+        m = self.k[sub_arm] // g
+        sub_lab = sub_ids[self.arms[sub_arm]]
+        self._check_sub(sub_lab, m)
+        q_local = np.flatnonzero(ok[m])                      # later frame of a valid sub pair
+        ps = self.partner(sub_lab, m, q_local, 1)
+        pf = self.partner(fwd, self.k, sub_arm[q_local], g)
+        tp = int(np.count_nonzero((ps >= 0) & (pf >= 0) & (sub_arm[np.maximum(ps, 0)] == pf)))
+        return {'agree': tp, 'sub_links': int(np.count_nonzero(ps >= 0)), 'full_links': int(np.count_nonzero(pf >= 0))}
+
+    def _check_sub(self, labels: np.ndarray, m: np.ndarray) -> None:
+        if len(labels) and labels.min() < 0:
+            raise ContainerError('diagnostics: a processed frame has an arm without a track label')
+        if len(labels) > 1:
+            key = m * (int(labels.max()) + 1) + labels
+            if len(np.unique(key)) != len(key):
+                raise ContainerError('diagnostics: a label occurs twice in one frame')
 
 
 def _empty_diagnostics(variants: dict, strides, by: str, origin_dtype: str) -> dict:
