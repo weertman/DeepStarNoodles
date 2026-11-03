@@ -932,12 +932,13 @@ All in `CORE/noodle_polylines/adapters.py`, `container.py` and `pipeline.py`; no
 
 - **Inference adapter.**
   - The values of `"polyline_source"` and `"mask_polygon_source"` are cut from the text before
-    `json.loads` (`_drop_unused_arrays`, one regex pass, `skip_unused=True` by default). The cut is
-    exact for valid JSON: the key cannot match inside a string (quotes there are escaped), it must
-    follow `{` or `,`, and the matched span runs greedily over number, bracket, comma and whitespace
-    characters and backs off to the last `]]`, which in a valid document is the value's own end.
+    `json.loads` (`_drop_unused_arrays`, one regex pass, `skip_unused=True` by default). The key
+    cannot match inside a string (quotes there are escaped) and must follow `{` or `,`; the matched
+    span runs greedily over number, bracket, comma and whitespace characters and backs off to the
+    last `]]`. As committed, that was *not* always the value's own end (see "Fix after review
+    (round 5)" below): the fixed pattern also requires the end of the object member after the span.
     `null`, `NaN`, flat or empty arrays are left to `json.loads`. The one behaviour change is that
-    a malformed number inside a cut array is no longer reported; `skip_unused=False` parses
+    malformed text inside a cut array is no longer reported; `skip_unused=False` parses
     everything.
   - Polylines and identities are converted once per star, not once per arm: every number goes
     through one `np.fromiter` (float64, then cast to float32), the same single rounding as the
@@ -1135,6 +1136,43 @@ set is read back for any further preset at 0.3 CPU-h per pass (stored IDs).
   profile of Fig 5 + re-link), unchanged since round 3.
 - **The representations**: 3.5 µs/arm (Fig 5, stored IDs), led by the base resample and the arc
   metrics as at round 4.
+
+### Fix after review (round 5)
+
+A review found that the default `skip_unused=True` path failed on some valid JSON that
+`skip_unused=False` and the round-4 reader both read. When a `polyline_source` or
+`mask_polygon_source` value was nested three or more deep and held a non-number after an inner
+`]]` (for example `[[[1,2],[3,4]],[[null,5]]]`, `[[[1,2]],[[true,5]]]`, `[[[1,2]],{"x":1}]`,
+or Python's `[[[1,2]],[[NaN,3]]]`), the greedy span backed off to the inner `]]`, only part of the
+value was cut, and `json.loads` raised `JSONDecodeError` on the rest. The commit's claim that the
+cut span is always exactly the value was wrong. It never produced a wrong container (the leftover
+text always made the parse fail), and the current producers (`runtime.py` and the backcast runner)
+write two-level float lists, which were cut correctly; but it was a correctness bug.
+
+- **Fix.** The pattern now also requires, by a lookahead, that the span be followed by the end of
+  an object member: `}`, or `,` and the next key's `"...":`. Inside an array a `]` is followed by
+  `,` or `]`, and a string element is never followed by `:`, so in valid JSON only the value's
+  own end qualifies. A value holding anything but arrays and numbers is now left whole to
+  `json.loads`. Values made only of arrays and numbers and ending in `]]` are cut at any depth.
+  (A stricter pattern accepting only arrays of flat numeric arrays was tried first: it was also
+  correct but ran the regex at about half the speed, +4.5 µs/arm on the real records; a
+  bracket-count check after the old pattern cost +2 µs/arm.)
+- **Checks.** A randomized test of `_drop_unused_arrays` (318,058 documents, nine seeds: random nesting,
+  `NaN`, `Infinity`, `null`, booleans, strings holding the key text, `]]` or escaped quotes, keys
+  with escaped quotes, objects inside the values, compact and indented dumps) gives exactly
+  `json.loads` of the uncut text with each numbers-only value ending in `]]` replaced by `null`.
+  An end-to-end randomized comparison of `skip_unused=True` with `False` (2,128 files: JSON and
+  JSONL, single- and multi-star, compact and indented, plain, `.gz`, `.bz2`, `.xz`) gives 0
+  mismatches; the same comparison on the round-5 commit gave 792. All 211,587 source arrays of the
+  60 real backcast files are still cut, and their containers are byte-identical with
+  `skip_unused` on and off. New test: `test_drop_unused_arrays_leaves_other_values_to_json`
+  (12 cases; 5 fail on the round-5 commit).
+- **Cost.** Real round-16 records 33.4 → 33.7 µs/arm (round-5 commit → fixed, best of 5, three
+  alternating runs each); runner-shaped records (subset) 35.3 → 35.7. Both are within the ±5%
+  stated above, so the round's numbers stand: 53.5 → 33.7 (1.59×) on the real records and
+  57.4 → 35.7 (1.61×) on runner-shaped ones.
+- **Gate.** `parity_check.py`: 4,213 checks, 0 failed, 3,773 bit-identical (unchanged).
+  `pytest tests/test_noodle_polylines*.py`: 141 passed (129 + 12).
 
 ### Findings for the camera-year (not changed here)
 

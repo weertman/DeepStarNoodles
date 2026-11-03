@@ -283,20 +283,25 @@ def _inner_suffix(path: Path) -> str:
 # Arrays of numbers the adapter never reads (source-pixel copies of the polyline and the star's mask
 # polygon): about half the numbers of a backcast record. They are cut from the text before json.loads.
 # The value group runs greedily over number / bracket / comma / whitespace characters and backs off to
-# the last "]]" before the first other character.
-_UNUSED_ARRAY = re.compile(r'"(?:polyline_source|mask_polygon_source)"\s*:\s*(\[[0-9.eE+\-,\[\]\s]*\]\s*\])')
+# the last "]]" that is followed by the end of an object member: "}" or "," and the next key's
+# '"...":'. Inside an array a "]" is followed by "," or "]" and a string element never by ":", so in
+# valid JSON only the value's own end qualifies. One character-class run, no per-number steps.
+_UNUSED_ARRAY = re.compile(r'"(?:polyline_source|mask_polygon_source)"\s*:\s*(\[[0-9.eE+\-,\[\]\s]*\]\s*\])'
+                           r'(?=\s*(?:\}|,\s*"(?:[^"\\]|\\.)*"\s*:))')
 
 
 def _drop_unused_arrays(text: str) -> str:
     """Replace the values of ``"polyline_source"`` / ``"mask_polygon_source"`` with ``null``.
 
-    In a valid JSON document the pattern can only match a real key (a ``"`` inside a string is escaped)
-    and the matched span is exactly the key's array value when that value ends in ``]]`` (an array of
-    points): the greedy run covers the value and then at most a comma and whitespace before the next
-    key's ``"`` or the object's ``}``, and backs off to the value's own closing brackets. The key must
-    also follow ``{`` or ``,``. Values of any other form (``null``, ``NaN``, flat arrays) are left to
-    ``json.loads``, and every other value parses exactly as before. Malformed text inside a cut value
-    is not reported (it is never parsed).
+    Only a value made of nothing but arrays and numbers and ending in ``]]`` (the arrays of points
+    that the runtime and the backcast runner write) is cut. In a valid JSON document the pattern can
+    only match a real key (a ``"`` inside a string is escaped, and the key must follow ``{`` or ``,``),
+    and the matched span starts at the value's ``[``, holds no string, and ends where the object
+    member ends (before ``}`` or before ``,`` and the next key), so it is exactly the value. A value
+    holding anything else, even after an inner ``]]`` (``NaN``, ``Infinity``, ``null``, ``true``, a
+    string, an object), and ``null``, ``[]`` or flat arrays, are not cut and are parsed by
+    ``json.loads`` as before. The one behaviour change: malformed text inside a cut value (a bad
+    number, a stray comma or bracket) is not reported, since it is never parsed.
     """
     out: list[str] = []
     pos = 0
@@ -392,8 +397,10 @@ def from_inference_json(path: str | Path, fps: float | None = None, skip_unused:
     Reads ``.json``, ``.jsonl`` and their ``.gz`` / ``.bz2`` / ``.xz`` / ``.zst`` compressions. With
     ``skip_unused`` (default) the unused ``polyline_source`` and ``mask_polygon_source`` arrays are cut
     from the text before parsing (:func:`_drop_unused_arrays`; about 40% faster on backcast records).
-    The container is identical either way; the only difference is that a malformed *number inside a
-    skipped array* is not reported. Pass ``skip_unused=False`` to parse every value.
+    Only values made of arrays and numbers alone are cut; any other value is parsed as before. The
+    container is identical either way; the only difference is that malformed text *inside a cut
+    array* (a bad number, a stray comma or bracket) is not reported. Pass ``skip_unused=False`` to
+    parse every value.
     """
     path = Path(path)
     stars: dict[int | None, dict[str, list]] = {}

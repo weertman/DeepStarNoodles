@@ -346,6 +346,27 @@ def test_drop_unused_arrays_cuts_only_whole_numeric_values():
     assert _drop_unused_arrays('{"x": 1}') == '{"x": 1}'
 
 
+@pytest.mark.parametrize('value', [
+    [[[1, 2], [3, 4]], [[None, 5]]], [[[1, 2]], [[True, 5]]], [[[1, 2]], {'x': 1}],
+    [[[1, 2]], [[float('nan'), 3]]], [[1, 2], [None, 3]], [[1, 2], 'x]]', [[3, 4]]],
+    [[[1, 2]], 3], [[1, 2], [float('inf'), 3]], [[1, 2], {'k': [[1, 2]]}], [], [1, 2], None])
+def test_drop_unused_arrays_leaves_other_values_to_json(tmp_path, value):
+    """A value holding a non-number (also after an inner ']]') or not ending in ']]' is left to json."""
+    rec = {'frame': 0, 'detected': True, 'crop': {'left': 0, 'top': 0, 'side': 9},
+           'arms': [{'polyline_crop': [[1, 2], [3, 4]], 'identity': [0.5] * 8, 'polyline_source': value}],
+           'mask_polygon_source': value}
+    for kw in ({}, {'indent': 2}, {'separators': (',', ':')}):
+        text = json.dumps(rec, **kw)
+        assert _drop_unused_arrays(text) == text
+        path = tmp_path / 'x.json'
+        path.write_text(json.dumps({'frames': [rec]}, **kw))
+        got, want = (adapters.from_inference_json(path, skip_unused=s) for s in (True, False))
+        same_container(got[None], want[None])
+    deep = {'polyline_source': [[[1, 2]], [[3, 4]]], 'k"\\:': [[[1]]]}           # numbers only: cut
+    for kw in ({}, {'indent': 2}):
+        assert json.loads(_drop_unused_arrays(json.dumps(deep, **kw))) == {**deep, 'polyline_source': None}
+
+
 def test_inference_polyline_fallbacks_match(tmp_path):
     """Shapes the batched conversion hands to the per-arm one: flat lists, deeper nests, None values."""
     cases = [

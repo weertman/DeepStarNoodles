@@ -94,8 +94,9 @@ Each adapter runs once, offline.
   `identity` is `None`, and a re-link raises `ContainerError`. The `polyline_source` and
   `mask_polygon_source` arrays are never used; by default their text is cut before
   `json.loads` (about half the numbers of a backcast record), which gives the same container.
-  Only a malformed number inside a cut array goes unreported; `skip_unused=False` parses
-  everything. `.zst` needs Python 3.14 or the optional `zstandard` package. Records whose
+  Only values made of arrays and numbers alone are cut; any other value (holding `NaN`,
+  `null`, strings or objects) is parsed as before. Only malformed text inside a cut array goes
+  unreported; `skip_unused=False` parses everything. `.zst` needs Python 3.14 or the optional `zstandard` package. Records whose
   `star_track_id` is `null` (the backcast runner without its live star tracker) are refused,
   as before: they need a star association first.
 
