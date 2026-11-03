@@ -208,10 +208,12 @@ training**, **34 validation**, and **63 test** images.
 | Path | Contents |
 | --- | --- |
 | `CORE/deepstarnoodles/` | Models, data, decoding, tracking, representations |
+| `CORE/noodle_polylines/` | Torch-free polyline representations of the paper figures |
 | `SCRIPTS/` | Training, evaluation, validation, and inference commands |
 | `config/` | Artifact hashes, evaluation locks, and tracking settings |
 | `docs/` | Detailed API and representation documentation |
 | `tests/` | Automated tests |
+| `examples/`, `benchmarks/` | Micro example data and scripts; benchmark and parity tools |
 | `external/dinov3/` | Vendored DINOv3 source under Meta's license |
 | `DATA/` | Downloaded datasets; excluded from git |
 | `MODELS/` | Downloaded and trained checkpoints; excluded from git |
@@ -397,6 +399,22 @@ calibration requirements, training, and sidecar formats.
 The optional temporal VAE was trained on a different Hydra checkpoint with
 the same channel contract. Its use with the released Hydra is available for
 experimentation but has not been scientifically revalidated.
+
+## Polyline representations of the paper figures
+
+`noodle_polylines` (in `CORE/noodle_polylines`) computes every arm-polyline quantity the
+paper figures use. It covers:
+
+- per-arm geometry: resampling, arc length, curvature, tip angle;
+- per-frame aggregates: fold asymmetry, arm-length spread, curvature, tip isotropy;
+- tracked kinematics: arm deformation and tip motion;
+- the optional FusedTracker association and its diagnostics.
+
+It works on a pickle-free CSR container and needs only numpy and scipy (no torch).
+Named presets reproduce each panel's exact definitions. A 90-s example with a runnable
+script is in [`examples/noodle_polylines`](examples/noodle_polylines). See
+[`docs/noodle-polylines.md`](docs/noodle-polylines.md) for the catalogue, the data model
+and the parity and benchmark tools.
 
 ## Tests
 
