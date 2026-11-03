@@ -330,3 +330,182 @@ The subset values were 1.72, 2.59, 1.41, 47.3, 47.0 and 479.4. All are within 15
 above, or faster. The parity gate gave the same result as before: 4,213 checks, 0 failed, 4,213
 bit-identical.
 
+
+## Round 2: batched per-frame reductions and tracked kinematics
+
+### What changed and why
+
+Before this round the per-frame aggregates (T2.2–T2.6) and the tracked kinematics (T3.1, T3.2) were
+still Python loops over frames. At round 1 they cost about 16 µs/arm (T2) and 54 µs/arm (T3) on
+the subset. The profile of the stored-ID Fig 5 path at `b41bd72` (subset, 71.5 µs/arm) confirmed
+where the time went. `rigid_residual` took 12.1 of the 20.5 s profiled, with SVD, `det`, `diag`
+and `mean` overheads per linked pair. Then came the per-frame `np.median` / `np.percentile` /
+`np.cov` calls, with 0.6 M `_mean` calls, 62 k `_median` and 21 k `_quantile`. T3.1 lay outside the
+round's brief (per-frame reductions), but the task allows "anything else that the profile shows
+dominates", and its per-frame median is one of those reductions, so it is included. Everything
+stays bit-identical to the per-frame loops. No change uses a closed form that would only agree to
+within a tolerance.
+
+- **New `_segments` module** (exact segment ops over frames):
+  - `seg_sort` sorts every frame's values as NaN-padded rows in power-of-two width classes, with
+    `np.sort(axis=1)`. This was 5× faster than `lexsort` on 1e6 values.
+  - `seg_median` and `seg_percentile` evaluate numpy's own expressions on the sorted segment: the
+    mean of the one or two middle values (`np.median`), the median of the non-NaN prefix
+    (`np.nanmedian`), and the `'linear'` virtual index with numpy's index clamping and two-sided
+    `_lerp`. Order statistics are exact input values, so these are bit-identical to numpy, ties,
+    NaN and ±inf included.
+  - `seg_rowsum` is `x.sum(0)` / `mean(0)` of (n, 2) blocks. numpy accumulates these row by row
+    from zero, not pairwise, and `np.add.reduceat` does not match it (2,706 of 3,000 random
+    blocks differed).
+  - `row_norm` is `np.linalg.norm` of 2-vectors. numpy computes it as `sqrt(x.dot(x))` through BLAS
+    `ddot`, which fuses the multiply-add, so `sqrt(x*x + y*y)` differs in the last bit (16,058 of
+    200,000 random vectors). `np.vecdot` takes the same dot path and matched all of them.
+- **T2.2 fold asymmetry, T2.3 IQR, T2.4 median curvature, T2.5 mean.** Each variant's per-arm
+  expression (`fig4e`, `fig4d`, `fig5` scaling orders, and float32 tip means in Fig 5) is computed
+  for all arms at once. The per-frame reduction is a segment op, and the frame masks are applied
+  afterwards. T2.5's per-frame mean uses round 1's pairwise `_csr.seg_sum`.
+- **T2.6 tip isotropy: batched LAPACK, not closed form.** A closed-form 2×2 eigen solve was tried
+  first. It agreed with the scripts only to about 3e-16 relative and failed the bit-exact unit
+  tests, so it was dropped. Instead, frames with the same tip count are stacked, and `np.cov` is
+  repeated literally: the tip-by-tip mean, centring, `X @ X.T` as `matmul(X, swapaxes(X))`, then
+  `* 1/(n-1)`. The 2×2 matrices then go through `np.linalg.eigvalsh` in one stacked call. The
+  second operand of the product must be a transposed view of the same buffer. A separate
+  contiguous copy takes a different BLAS path and differed on one Sleepy frame (17 tips) in the
+  parity gate. With the view, the results are bit-identical.
+- **T3.1 / T3.2: sorted-key joins and a batched exact Kabsch fit.** The scripts' per-frame dicts
+  (`{tid: shape}`, where a later arm of the same track overwrites an earlier one, followed by
+  `tid in prev` lookups) are replaced by one sort of (frame, track) keys and a `searchsorted`. The
+  key is the frame ordinal for `last_arm_frame` and T3.2, and the frame position for
+  `prev_frame_reset`, which also de-duplicates the current side. `kinematics.rigid_residuals`
+  runs `_reference.rigid_residual`'s expression on stacked pairs. Each step (`mean(0)`,
+  `ca.T @ cb`, the 2×2 `svd`, `sign(det(u @ vt))`, `u @ diag(1, d) @ vt`, the residual and
+  numpy's pairwise `.mean()`) is a stacked `matmul` or LAPACK gufunc that runs the same kernel on
+  every slice. It matched `R.rigid_residual` on 100,000 random pairs, bit for bit, at 2.2 µs per
+  pair instead of 47. The tolerance allowed for closed-form Kabsch (1e-10 abs) is not used. Shapes
+  are built only for linked arms, in blocks of 32,768 pairs. A NaN R0 on a linked frame still
+  raises `LinAlgError` from the SVD, as the scripts do.
+- **Window masks (T0.7).** `scale.in_any_window` merges the windows into disjoint closed intervals
+  and uses `searchsorted`, which is O((n + W) log W) instead of an (n, W) broadcast. Windows with a
+  NaN bound or `lo > hi` are dropped, since they never contain a point. The R0 policies were
+  already one vectorised median each.
+- **Fig 4D per-bout deformation.** Each bout window now runs on its own masked frame span
+  (`select_frames`), not the whole sequence. Frames outside the shape mask only reset or skip the
+  lag reference, so the values are identical. A clip with W bouts now costs O(span) per bout
+  instead of O(F).
+- **Bench harness.** Two kernels were added: `T2.5 frame_lists_4b` and `E2E compute_all fig4d (bout
+  windows, stored IDs)`. The second uses a 30-s window every 120 s and an explicit R0, because a
+  short Sleepy segment can lie wholly inside its own windows, leaving a NaN outside-window R0.
+  Both the old and the new code then fail in the SVD.
+
+### Run
+
+| | |
+|---|---|
+| Date | 2026-11-02 |
+| CPU | Intel Xeon W-3365, 64 cores (shared workstation, load average about 4) |
+| Software | Python 3.12.13, numpy 2.4.3, scipy 1.17.1 |
+| Before | `b41bd72` (round 1 plus review repair), run with this round's `bench.py` |
+| After | this commit |
+
+```
+OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,subset,synthetic \
+    --data-dir RUNS/paper_retrace_f39dc82b --synthetic-arms 1000000 --repeats 5 --synthetic-repeats 5 \
+    --jobs 2 --kernels "T0.,T1.,T2.,T3.,E2E compute_all fig5 (stored,fig4d"
+OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,subset \
+    --data-dir RUNS/paper_retrace_f39dc82b --repeats 5 --jobs 1 --kernels "fig5 + relink"
+```
+
+- **Timings.** Each value is the best of 5 runs after one warm-up, with each job in a fresh
+  single-threaded process.
+- **Concurrency.** The before and after runs went at the same time, so 4 single-threaded processes
+  shared 64 cores. The unchanged geometry kernels came out within 3% of round 1's clean `--jobs 1`
+  rerun (synthetic resample_base 1.44/1.46 µs/arm, against 1.47).
+- **Not re-timed.** The tracker kernels (T4.4 relink, T4.5 diagnostics) did not change in this
+  round.
+- **Inputs.** The same as round 1: micro is 1,226 arms; the subset is 173,434 arms (7 flipping
+  clips and 36 Sleepy segments); the synthetic input is the subset tiled to 1,000,416 arms.
+- **Memory.** Peak RSS is whole-process VmHWM in MB (input build plus kernel), shown as before → after.
+
+### Per kernel (before → after)
+
+| Kernel | Micro µs/arm | Subset µs/arm | Synthetic µs/arm | Speed-up, subset / synthetic (CPU) | Peak RSS MB, subset; synthetic | CPU-h per camera-year |
+|---|---:|---:|---:|---:|---:|---:|
+| T2.2 fold_asymmetry (fig5) | 1.73 → 0.11 | 1.55 → 0.08 | 1.44 → 0.05 | 20.1× / 26.7× | 156 → 161; 415 → 415 | 0.13 → 0.006 |
+| T2.3 arm_length_spread (fig5, includes T0.3) | 8.98 → 1.93 | 7.35 → 1.57 | 6.83 → 1.18 | 4.7× / 5.8× | 168 → 169; 415 → 416 | 0.61 → 0.13 |
+| T2.4 arm_curvature (fig5, includes T1.1) | 5.07 → 1.84 | 4.35 → 1.58 | 3.82 → 1.15 | 2.7× / 3.3× | 174 → 166; 414 → 415 | 0.36 → 0.13 |
+| T2.5 frame_lists_4b (includes T0.3) | 2.78 → 1.83 | 2.25 → 1.51 | 1.91 → 1.14 | 1.5× / 1.7× | 174 → 168; 416 → 413 | 0.19 → 0.13 |
+| T2.6 tip_isotropy | 6.84 → 0.31 | 5.72 → 0.20 | 5.63 → 0.15 | 28.5× / 38.8× | 163 → 156; 414 → 416 | 0.48 → 0.017 |
+| T0.7 R0 policies | 0.07 → 0.08 | 0.02 → 0.03 | 0.01 → 0.01 | 0.8× / 0.8× | 156 → 156; 414 → 415 | 0.00 → 0.00 |
+| T3.1 arm_deformation, lag B (includes T0.2 base) | 49.41 → 4.84 | 47.05 → 4.11 | 47.28 → 3.77 | 11.4× / 12.5× | 172 → 172; 462 → 446 | 3.92 → 0.34 |
+| T3.1 arm_deformation, lag A (includes T0.2 base) | 49.80 → 4.97 | 46.03 → 4.27 | 46.35 → 3.84 | 10.8× / 12.1× | 171 → 178; 446 → 453 | 3.84 → 0.36 |
+| T3.2 tip_motion | 7.20 → 0.40 | 6.41 → 0.31 | 6.42 → 0.25 | 20.6× / 25.3× | 157 → 162; 416 → 413 | 0.53 → 0.026 |
+| **E2E compute_all fig5 (stored IDs)** | 78.24 → 8.15 | 482.54 → 415.63* | 70.16 → 5.56 | 1.2×* / **12.6×** | 176 → 174; 446 → 448 | 40.2* → 34.6* |
+| **E2E compute_all fig4d (bout windows, stored IDs)** | 49.62 → 7.04 | 40.51 → 5.24 | 41.52 → 4.39 | 7.7× / 9.5× | 174 → 171; 452 → 421 | 3.38 → 0.44 |
+| **E2E compute_all fig5 + relink** | 506.26 → 443.62 | 661.41 → 592.71 | — | 1.1× / — | 183 → 183 | 55.1 → 49.4 |
+| *unchanged:* T0.2 resample_base | 2.32 → 2.09 | 1.87 → 1.75 | 1.44 → 1.46 | 1.1× / 1.0× | 177 → 169; 416 → 429 | 0.16 → 0.15 |
+| *unchanged:* T0.2 resample_tip (tracker input) | 3.09 → 3.04 | 2.76 → 2.79 | 1.93 → 1.95 | 1.0× / 1.0× | 184 → 184; 422 → 431 | 0.23 → 0.23 |
+| *unchanged:* T0.3 + T1.1 arc_length_curvature | 1.77 → 1.75 | 1.43 → 1.46 | 1.10 → 1.13 | 1.0× / 1.0× | 169 → 167; 415 → 415 | 0.12 → 0.12 |
+| *unchanged:* T0.4 to_source | 0.45 → 0.46 | 0.31 → 0.33 | 0.28 → 0.27 | 0.9× / 1.0× | 164 → 165; 479 → 483 | 0.03 → 0.03 |
+| *unchanged:* T1.3 tip_polar | 0.07 → 0.07 | 0.08 → 0.09 | 0.08 → 0.08 | 1.0× / 1.0× | 156 → 152; 417 → 414 | 0.01 → 0.01 |
+
+\* The subset's "stored IDs" row re-links its 36 Sleepy segments, which have no stored IDs, so the
+tracker dominates it (about 586 µs/arm per pass at round 1). The synthetic row has stored IDs
+throughout.
+
+The T2.3, T2.4 and T2.5 rows include the T0.3/T1.1 arm metrics (1.1–1.5 µs/arm), so their own
+reductions now cost 0.05–0.1 µs/arm. In `compute_all` the metrics are computed once and shared.
+
+Peak RSS did not change beyond noise: every row moved by 13 MB or less either way, except two
+drops. T3.1 lag B on synthetic dropped from 462 to 446 MB, because shapes are built per block of linked
+pairs rather than for all arms at once (192 B per arm). Fig 4D on synthetic dropped from 452 to
+421 MB, because each bout's shapes are now built only over that bout's span.
+
+### Camera-year projection (3e8 arms, one core)
+
+| Workload | Round 1 (`b41bd72`, this run) | Round 2 |
+|---|---:|---:|
+| Fig 5 representations with stored IDs (synthetic basis) | 5.85 CPU-h | **0.46 CPU-h** |
+| Fig 4D representations with stored IDs, 30-s bout every 120 s (synthetic basis) | 3.46 CPU-h | **0.37 CPU-h** |
+| Fig 5 representations with a re-link (subset basis) | 55.1 CPU-h | 49.4 CPU-h |
+| One tracker pass (not re-timed) | about 49 CPU-h | about 49 CPU-h |
+| Fig 6D diagnostics (10 passes, not re-timed) | about 335 CPU-h | about 335 CPU-h |
+
+Against `518f47e` under the post-v0 harness (124.6 µs/arm, 10.4 CPU-h; see round 1), the Fig 5
+stored-ID path is now 22× faster (5.56 µs/arm).
+Every workload that re-links is now about 99% tracker. That is the target for the next tracker
+round (batched `common_span_dist` cost matrix, T4.1/T4.2).
+
+### Hotspots after round 2
+
+The profile covers `compute_all('fig5')` with stored IDs on the subset (Sleepy segments re-linked
+beforehand): 1.14 s profiled, against 20.5 s at `b41bd72`.
+
+| Function | Self s | Note |
+|---|---:|---|
+| `np.linalg.svd` (stacked 2×2) | 0.21 | LAPACK on 164 k linked pairs, about 1.3 µs per pair; replacing it with a closed form would give up bit-identity |
+| `_csr.seg_search`, `_resample_base_block` | 0.19 | T0.2 base resample for the T3.1 shapes |
+| `rigid_residuals` (own) | 0.10 | stacked matmuls and temporaries |
+| `_arc_curv_block`, `seg_sum`, `seg_cumsum` | 0.21 | T0.3/T1.1 arm metrics |
+| everything per frame (T2 + T3 joins and medians) | < 0.1 | |
+
+### Parity and tests at round 2
+
+- `parity_check.py`, unchanged, full gate (micro, 7 flipping clips, and the Sleepy subset with all
+  18 Fig 6D sequences): **4,213 checks, 0 failed, 4,213 bit-identical**, the same as round 1.
+  Its float rows include Fig 4D/4E lag A, Fig 5 lag B, tip motion, isotropy (support-centroid and
+  runtime-origin frames, both window fallbacks), the R0 policies and every preset.
+- The intermediate closed-form isotropy and the separate-copy covariance product were not committed:
+  they gave 4,212 bit-identical (one Sleepy segment at 1.2e-16 relative, within tolerance).
+- New `tests/test_noodle_polylines_segments.py` (16 tests) checks the batched code bit for bit
+  against the per-frame loops it replaced. Those loops are kept in the test as oracles and call
+  `_reference.rigid_residual` and `isotropy_frame`. The cases cover:
+  - frames with 0–3 and 150 arms, duplicate arms (ties), 1- and 2-point arms;
+  - NaN origins and centroids, frames without a star, and a per-frame R0 with NaN and 0;
+  - duplicate track IDs within a frame, untracked arms (`-1`) and gaps;
+  - both lags, both shape orders and a shape mask, with every T2 variant, reducer and `min_arms`;
+  - degenerate isotropy frames (collinear and identical tips);
+  - overlapping, touching, reversed and NaN windows;
+  - Fig 4D per-bout windows against whole-sequence runs, also through `compute_all`;
+  - the `_segments` ops against numpy, with NaN, ±inf, -0.0, ties and segments up to 300 long.
+- `pytest tests/test_noodle_polylines*.py`: **86 passed** (70 + 16). `_reference.py`, the
+  fixtures, the tolerances and `parity_check.py` are unchanged. The micro example runs.

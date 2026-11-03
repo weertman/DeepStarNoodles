@@ -129,6 +129,19 @@ def _fig5(c):
     return NP.compute_all(c, 'fig5', r0=R0, track='stored' if c.has_track_id() else 'relink')
 
 
+def _bout_windows(c, every_s: float = 120.0, length_s: float = 30.0):
+    """Synthetic Fig 4D bouts: a ``length_s`` window every ``every_s`` seconds of the sequence."""
+    t = c.times()
+    starts = np.arange(float(t[0]), float(t[-1]), every_s)
+    return [(a, a + length_s) for a in starts]
+
+
+def _fig4d(c):
+    # explicit R0: a short Sleepy segment can lie inside its own windows, leaving no frame for the
+    # outside-windows median (R0 NaN, and the scripts' SVD fails on NaN shapes)
+    return NP.compute_all(c, 'fig4d', r0=R0, windows=_bout_windows(c), track='stored')
+
+
 KERNELS = {
     'T0.2 resample_base': lambda c: G.resample_base(c.points, c.arm_point_offsets),
     'T0.2 resample_tip (body-rel)': lambda c: TR.tracker_inputs(c),
@@ -138,6 +151,7 @@ KERNELS = {
     'T2.2 fold_asymmetry (fig5)': lambda c: FR.fold_asymmetry(c, R0, 'fig5'),
     'T2.3 arm_length_spread (fig5)': lambda c: FR.arm_length_spread(c, R0, 'fig5'),
     'T2.4 arm_curvature (fig5)': lambda c: FR.arm_curvature(c, R0, 'fig5'),
+    'T2.5 frame_lists_4b (includes T0.3)': lambda c: FR.frame_lists_4b(c),
     'T2.6 tip_isotropy': lambda c: FR.tip_isotropy(c),
     'T0.7 R0 policies': lambda c: (SC.r0_per_frame(c), SC.r0_outside_windows(c, [(c.times()[0] + 10, c.times()[0] + 40)])),
     'T4.4 relink (1 pass)': lambda c: TR.relink(c),
@@ -147,9 +161,11 @@ KERNELS = {
     'T4.5 diagnostics (10 passes)': lambda c: TR.diagnostics(c, frames=np.arange(c.n_frames), fps=c.fps or 1.0),
     'E2E compute_all fig5 (stored IDs)': _fig5,
     'E2E compute_all fig5 + relink': lambda c: NP.compute_all(c, 'fig5', r0=R0, track='relink'),
+    'E2E compute_all fig4d (bout windows, stored IDs)': _fig4d,
 }
 EXPENSIVE = {'T4.5 diagnostics (10 passes)'}
-TRACKED = {'T3.1 arm_deformation lag B', 'T3.1 arm_deformation lag A', 'T3.2 tip_motion'}
+TRACKED = {'T3.1 arm_deformation lag B', 'T3.1 arm_deformation lag A', 'T3.2 tip_motion',
+           'E2E compute_all fig4d (bout windows, stored IDs)'}
 
 
 def _build(spec: dict) -> list[PolylineContainer]:

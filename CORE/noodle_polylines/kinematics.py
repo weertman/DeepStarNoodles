@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import _csr
 from . import _reference as R
+from . import _segments as SG
 from . import geometry as G
 from .container import PolylineContainer
 from .frames import _r0_per_frame
@@ -28,11 +30,50 @@ def rigid_residual(a: np.ndarray, b: np.ndarray) -> float:
     return R.rigid_residual(a, b)
 
 
-def _shapes(c: PolylineContainer, r0: np.ndarray, order: str, base: np.ndarray | None) -> np.ndarray:
-    if base is None:
-        base = G.base_shapes(c)
-    af = c.arm_frame()
-    return G.shape12(base, c.crop[af, 2], r0[af], order=order)
+_PAIR_BLOCK = 1 << 15
+
+
+def rigid_residuals(a: np.ndarray, b: np.ndarray, block: int = _PAIR_BLOCK) -> np.ndarray:
+    """(N,) :func:`rigid_residual` of every pair of (N, k, 2) float64 shapes, bit-identical.
+
+    The script's expression is evaluated on stacked pairs: the row-by-row ``mean(0)``, ``ca.T @ cb``,
+    the 2x2 SVD, ``sign(det(u @ vt))``, ``u @ diag(1, d) @ vt`` and the squared residuals all run as
+    stacked ``matmul`` / LAPACK gufuncs, which apply the same kernel to each slice as the 2-D call does;
+    the final ``.mean()`` over k uses numpy's pairwise order (``_csr.seg_sum``).
+    """
+    a = np.asarray(a, np.float64)
+    b = np.asarray(b, np.float64)
+    N, k = a.shape[:2]
+    out = np.empty(N)
+    for s in range(0, N, block):
+        pa, pb = a[s:s + block], b[s:s + block]
+        n = len(pa)
+        sa = np.zeros((n, 2))
+        sb = np.zeros((n, 2))
+        for j in range(k):                       # a.mean(0): accumulated row by row from zero
+            sa += pa[:, j]
+            sb += pb[:, j]
+        ca = pa - (sa / k)[:, None, :]
+        cb = pb - (sb / k)[:, None, :]
+        u, _s, vt = np.linalg.svd(np.matmul(np.swapaxes(ca, 1, 2), cb))
+        d = np.sign(np.linalg.det(np.matmul(u, vt)))
+        diag = np.zeros((n, 2, 2))
+        diag[:, 0, 0] = 1.0
+        diag[:, 1, 1] = d
+        rot = np.matmul(np.matmul(u, diag), vt)
+        e = np.matmul(ca, rot)
+        e -= cb
+        e *= e
+        sq = e[..., 0] + e[..., 1]               # .sum(1) of two values
+        out[s:s + n] = np.sqrt(_csr.seg_sum(sq.ravel(), np.arange(n, dtype=np.int64) * k, np.full(n, k)) / k)
+    return out
+
+
+def _shapes_of(c: PolylineContainer, base: np.ndarray, arms: np.ndarray, r0: np.ndarray, order: str,
+               af: np.ndarray) -> np.ndarray:
+    """T1.6 shapes of the given arms only (elementwise identical to shape12 of all arms)."""
+    f = af[arms]
+    return G.shape12(base[arms], c.crop[f, 2], r0[f], order=order)
 
 
 def _track(c: PolylineContainer, track_id) -> np.ndarray:
@@ -46,6 +87,73 @@ def _track(c: PolylineContainer, track_id) -> np.ndarray:
     return t
 
 
+def _link(ref_key: np.ndarray, ref_tid: np.ndarray, q_key: np.ndarray, q_tid: np.ndarray) -> np.ndarray:
+    """For each query (key, tid), the position in the ref arrays of the LAST ref entry with the same
+    (key, tid), or -1. This is the scripts' ``{tid: value for arm in frame}`` dict (later arms overwrite
+    earlier ones) followed by ``tid in prev`` lookups, for all frames at once."""
+    if not len(ref_key) or not len(q_key):
+        return np.full(len(q_key), -1, np.int64)
+    u, inv = np.unique(np.concatenate([ref_tid, q_tid]), return_inverse=True)
+    m = np.int64(len(u))
+    rk = ref_key.astype(np.int64) * m + inv[:len(ref_tid)]
+    qk = q_key.astype(np.int64) * m + inv[len(ref_tid):]
+    order = np.argsort(rk, kind='stable')
+    rks = rk[order]
+    last = np.ones(len(rks), bool)
+    last[:-1] = rks[1:] != rks[:-1]
+    ukeys, upos = rks[last], order[last]
+    i = np.minimum(np.searchsorted(ukeys, qk), len(ukeys) - 1)
+    return np.where(ukeys[i] == qk, upos[i], -1)
+
+
+def _frame_median(values: np.ndarray, frame: np.ndarray, F: int) -> np.ndarray:
+    """(F,) ``np.median`` of the values of each frame (``frame`` non-decreasing); NaN for frames without."""
+    out = np.full(F, np.nan)
+    if not len(values):
+        return out
+    counts = np.bincount(frame, minlength=F)
+    f = np.flatnonzero(counts)
+    st = SG.seg_starts(counts)[f]
+    out[f] = SG.seg_median(SG.seg_sort(values, st, counts[f]), st, counts[f])
+    return out
+
+
+def _pairs_last_arm_frame(af: np.ndarray, tid: np.ndarray, ok: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(ref arm, cur arm) pairs of the 'last_arm_frame' lag: every arm with a track in an ``ok`` frame,
+    linked to the last arm of its track in the previous ``ok`` frame. Ordered by cur arm."""
+    okf = np.flatnonzero(ok)
+    ordinal = np.full(len(ok), -1, np.int64)
+    ordinal[okf] = np.arange(len(okf))
+    arms = np.flatnonzero((ordinal[af] >= 0) & (tid >= 0))
+    k = ordinal[af[arms]]
+    q = k >= 1
+    hit = _link(k, tid[arms], k[q] - 1, tid[arms[q]])
+    cur = arms[q][hit >= 0]
+    ref = arms[hit[hit >= 0]]
+    return ref, cur
+
+
+def _pairs_prev_frame(af: np.ndarray, tid: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(ref arm, cur arm) pairs of the 'prev_frame_reset' lag: per masked frame f and track, the last arm
+    of the track in f linked to its last arm in frame f - 1 (also masked). Ordered by (frame, track)."""
+    arms = np.flatnonzero(mask[af] & (tid >= 0))
+    f = af[arms]
+    # the cur side is a dict too: one entry (the last arm) per (frame, track)
+    u, inv = np.unique(tid[arms], return_inverse=True)
+    key = f * np.int64(max(len(u), 1)) + inv
+    order = np.argsort(key, kind='stable')
+    ks = key[order]
+    last = np.ones(len(ks), bool)
+    last[:-1] = ks[1:] != ks[:-1]
+    cur_all = arms[order[last]]                  # ordered by (frame, track)
+    fc = af[cur_all]
+    q = fc >= 1
+    hit = _link(fc, tid[cur_all], fc[q] - 1, tid[cur_all[q]])
+    cur = cur_all[q][hit >= 0]
+    ref = cur_all[hit[hit >= 0]]
+    return ref, cur
+
+
 def arm_deformation(c: PolylineContainer, r0, track_id: np.ndarray | None = None, lag: str = 'last_arm_frame',
                     shape_order: str | None = None, shape_mask: np.ndarray | None = None,
                     base: np.ndarray | None = None) -> np.ndarray:
@@ -55,6 +163,9 @@ def arm_deformation(c: PolylineContainer, r0, track_id: np.ndarray | None = None
     ``prev_frame_reset`` and 'fig5' for ``last_arm_frame`` (last-bit differences only). ``shape_mask`` (F,)
     restricts the frames that contribute shapes (Fig 4D uses star frames within [start - 1, stop]); the
     default is star frames for ``prev_frame_reset``. Raw values; Fig 4D plots ``log10(max(x, 1e-3))``.
+
+    The track joins are sorted-key lookups over all frames at once and the residuals are batched
+    (:func:`rigid_residuals`); the values are bit-identical to the scripts' per-frame dict loops.
     """
     if lag not in LAGS:
         raise ValueError(f'lag must be one of {LAGS}')
@@ -63,68 +174,62 @@ def arm_deformation(c: PolylineContainer, r0, track_id: np.ndarray | None = None
     F = c.n_frames
     r0 = _r0_per_frame(r0, F)
     order = shape_order or ('fig4' if lag == 'prev_frame_reset' else 'fig5')
-    shapes = _shapes(c, r0, order, base)
     t = c.times()
     fo = c.frame_arm_offsets
-    out = np.full(F, np.nan)
+    af = c.arm_frame()
     if lag == 'prev_frame_reset':
         mask = c.star_mask() if shape_mask is None else (np.asarray(shape_mask, bool) & c.star_mask())
-        prev_t, prev = None, {}
-        for f in range(F):
-            cur = {int(tid[a]): shapes[a] for a in range(fo[f], fo[f + 1]) if tid[a] >= 0} if mask[f] else {}
-            if prev_t is not None and cur and prev:
-                bends = [R.rigid_residual(prev[k], v) / (t[f] - prev_t) for k, v in cur.items() if k in prev]
-                if bends:
-                    out[f] = float(np.median(bends))
-            prev_t, prev = t[f], cur
-        return out
-    c.require('body_origin_model')
-    ok = (np.diff(fo) > 0) & np.all(np.isfinite(c.body_origin_model), axis=1)
-    if shape_mask is not None:
-        ok &= np.asarray(shape_mask, bool)
-    prev_t, prev = None, {}
-    for f in np.flatnonzero(ok):
-        arms = [a for a in range(fo[f], fo[f + 1]) if tid[a] >= 0]
-        if prev_t is not None:
-            dt = t[f] - prev_t
-            bends = [R.rigid_residual(prev[int(tid[a])], shapes[a]) / dt for a in arms if int(tid[a]) in prev]
-            if bends:
-                out[f] = float(np.median(bends))
-        prev = {int(tid[a]): shapes[a] for a in arms}
-        prev_t = t[f]
-    return out
+        ref, cur = _pairs_prev_frame(af, tid, mask)
+    else:
+        c.require('body_origin_model')
+        ok = (np.diff(fo) > 0) & np.all(np.isfinite(c.body_origin_model), axis=1)
+        if shape_mask is not None:
+            ok &= np.asarray(shape_mask, bool)
+        ref, cur = _pairs_last_arm_frame(af, tid, ok)
+    if not len(cur):
+        return np.full(F, np.nan)
+    if base is None:
+        base = G.base_shapes(c)
+    res = np.empty(len(cur))
+    for s in range(0, len(cur), _PAIR_BLOCK):
+        rb, cb = ref[s:s + _PAIR_BLOCK], cur[s:s + _PAIR_BLOCK]
+        res[s:s + _PAIR_BLOCK] = rigid_residuals(_shapes_of(c, base, rb, r0, order, af),
+                                                 _shapes_of(c, base, cb, r0, order, af))
+    fc = af[cur]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        bends = res / (t[fc] - t[af[ref]])
+    return _frame_median(bends, fc, F)
 
 
 def tip_motion(c: PolylineContainer, r0, track_id: np.ndarray | None = None) -> np.ndarray:
     """T3.2 (F,) median over linked arms of the body-relative tip displacement / R0 / dt (R0 / s).
 
     ``rel_tip = (tip - body_origin) * (side/512) / R0``; an arm counts when its track had a tip in the last
-    frame with arms and a finite origin (prepare_figure_05_measures.py:192-198,203-205).
+    frame with arms and a finite origin (prepare_figure_05_measures.py:192-198,203-205). Batched like
+    :func:`arm_deformation`; bit-identical to the per-frame loop.
     """
     c.require('crop', 'body_origin_model')
     tid = _track(c, track_id)
     F = c.n_frames
     r0 = _r0_per_frame(r0, F)
     t = c.times()
-    fo, ao, pts = c.frame_arm_offsets, c.arm_point_offsets, c.points
+    fo = c.frame_arm_offsets
+    af = c.arm_frame()
     ok = (np.diff(fo) > 0) & np.all(np.isfinite(c.body_origin_model), axis=1)
-    out = np.full(F, np.nan)
-    prev_t, prev = None, {}
-    for f in np.flatnonzero(ok):
-        scale = c.crop[f, 2] / MODEL_SIZE
-        centre = np.asarray(c.body_origin_model[f], float)
-        arms = list(range(fo[f], fo[f + 1]))
-        tips = np.asarray([pts[ao[a + 1] - 1] for a in arms])
-        rel = (tips - centre) * scale / r0[f]
-        if prev_t is not None:
-            dt = t[f] - prev_t
-            moves = [np.linalg.norm(rel[i] - prev[int(tid[a])]) / dt for i, a in enumerate(arms)
-                     if tid[a] >= 0 and int(tid[a]) in prev]
-            if moves:
-                out[f] = float(np.median(moves))
-        prev = {int(tid[a]): rel[i] for i, a in enumerate(arms) if tid[a] >= 0}
-        prev_t = t[f]
-    return out
+    ref, cur = _pairs_last_arm_frame(af, tid, ok)
+    if not len(cur):
+        return np.full(F, np.nan)
+    tips = c.points[c.arm_point_offsets[1:] - 1]
+
+    def rel(arms):
+        f = af[arms]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return (tips[arms] - c.body_origin_model[f]) * (c.crop[f, 2] / MODEL_SIZE)[:, None] / r0[f][:, None]
+
+    fc = af[cur]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        moves = SG.row_norm(rel(cur) - rel(ref)) / (t[fc] - t[af[ref]])
+    return _frame_median(moves, fc, F)
 
 
 def tip_angle_track(c: PolylineContainer, track_id: np.ndarray | None = None, origin_dtype: str = 'auto',

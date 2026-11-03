@@ -20,9 +20,10 @@ import math
 
 import numpy as np
 
-from . import _reference as R
+from . import _csr
+from . import _segments as SG
 from . import geometry as G
-from .container import PolylineContainer
+from .container import PolylineContainer, _ranges
 
 MODEL_SIZE = 512
 VARIANTS = ('fig4e', 'fig4d', 'fig5')
@@ -80,6 +81,17 @@ def support_area_source(c: PolylineContainer) -> np.ndarray:
 
 
 # ------------------------------------------------------------------------------------ T2.2 - T2.4
+# The aggregates below are batched over frames with the exact segment reductions of ``_segments``; each
+# per-frame value is the same IEEE expression the figure scripts evaluate on that frame's arms.
+def _frame_layout(c: PolylineContainer) -> tuple[np.ndarray, np.ndarray]:
+    fo = c.frame_arm_offsets
+    return fo[:-1], np.diff(fo)
+
+
+def _tip_index(c: PolylineContainer) -> np.ndarray:
+    return c.arm_point_offsets[1:] - 1
+
+
 def fold_asymmetry(c: PolylineContainer, r0, variant: str = 'fig5') -> np.ndarray:
     """T2.2 (F,) distance from the body origin to the mean arm tip, / R0 (source px / source px)."""
     _check(variant)
@@ -88,27 +100,32 @@ def fold_asymmetry(c: PolylineContainer, r0, variant: str = 'fig5') -> np.ndarra
     r0 = _r0_per_frame(r0, F)
     ok = valid_frames(c, variant)
     out = np.full(F, np.nan)
-    fo, ao, pts = c.frame_arm_offsets, c.arm_point_offsets, c.points
+    if not ok.any():
+        return out
+    st, n = _frame_layout(c)
+    crop = c.crop
     if variant == 'fig4e':
-        tips = G.tips_source(pts, ao, fo, c.crop)
-        origin = G.origin_source(c.body_origin_model, c.crop)
+        tips = G.tips_source(c.points, c.arm_point_offsets, c.frame_arm_offsets, crop)
     elif variant == 'fig4d':
-        origin = G.origin_source(c.body_origin_model, c.crop)
-    for f in np.flatnonzero(ok):
-        a0, a1 = fo[f], fo[f + 1]
-        if variant == 'fig4e':
-            t = tips[a0:a1]
-            out[f] = float(np.linalg.norm(t.mean(0) - origin[f]) / r0[f])
-        elif variant == 'fig4d':
-            scale = c.crop[f, 2] / MODEL_SIZE
-            offset = np.array([c.crop[f, 0], c.crop[f, 1]])
-            t = np.array([np.asarray(pts[ao[a + 1] - 1], float) * scale + offset for a in range(a0, a1)])
-            out[f] = float(np.linalg.norm(t.mean(0) - origin[f]) / r0[f])
-        else:
-            scale = c.crop[f, 2] / MODEL_SIZE
-            centre = np.asarray(c.body_origin_model[f], float)
-            t = np.asarray([pts[ao[a + 1] - 1] for a in range(a0, a1)])
-            out[f] = float(np.linalg.norm(t.mean(0) - centre) * scale / r0[f])
+        # np.asarray(tip, float) * (side / 512) + [left, top], per arm
+        af = c.arm_frame()
+        tips = np.asarray(c.points[_tip_index(c)], np.float64)
+        tips *= (crop[af, 2] / MODEL_SIZE)[:, None]
+        tips += crop[af, :2]
+    else:
+        tips = c.points[_tip_index(c)]                      # float32, as the script's t array
+    f = np.flatnonzero(ok)
+    sums = SG.seg_rowsum(tips, st[f], n[f])                 # t.mean(0): row-by-row sum, then / n
+    mean = sums / n[f][:, None] if sums.dtype == np.float64 else \
+        (sums.astype(np.float64) / n[f][:, None]).astype(sums.dtype)
+    if variant == 'fig5':
+        d = SG.row_norm(mean.astype(np.float64) - c.body_origin_model[f])
+        with np.errstate(divide='ignore', invalid='ignore'):
+            out[f] = d * (crop[f, 2] / MODEL_SIZE) / r0[f]
+    else:
+        d = SG.row_norm(mean - G.origin_source(c.body_origin_model[f], crop[f]))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            out[f] = d / r0[f]
     return out
 
 
@@ -129,19 +146,23 @@ def arm_length_spread(c: PolylineContainer, r0, variant: str = 'fig5', arc_lengt
     F = c.n_frames
     r0 = _r0_per_frame(r0, F)
     L = _per_arm_lengths(c, r0, variant, arc_length)
-    ok = valid_frames(c, variant)
+    st, n = _frame_layout(c)
+    ok = valid_frames(c, variant) & (n >= min_arms)
     out = np.full(F, np.nan)
-    fo = c.frame_arm_offsets
-    for f in np.flatnonzero(ok):
-        side = float(c.crop[f, 2])
+    if not ok.any():
+        return out
+    af = c.arm_frame()
+    L = np.asarray(L, np.float64)                             # float(x)
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
         if variant == 'fig5':
-            scale = c.crop[f, 2] / MODEL_SIZE
-            lengths = [float(x) * scale / r0[f] for x in L[fo[f]:fo[f + 1]]]
+            vals = L * (c.crop[af, 2] / MODEL_SIZE) / r0[af]  # float(x) * (side / 512) / R0
         else:
-            lengths = np.array([float(x) * side / MODEL_SIZE for x in L[fo[f]:fo[f + 1]]]) / r0[f]
-        if len(lengths) >= min_arms:
-            q1, q3 = np.percentile(lengths, [25, 75])
-            out[f] = float(q3 - q1)
+            vals = L * c.crop[af, 2] / MODEL_SIZE / r0[af]    # (float(x) * side / 512) / R0
+        f = np.flatnonzero(ok)
+        sv = SG.seg_sort(vals, st[f], n[f])
+        q1 = SG.seg_percentile(sv, st[f], n[f], 25)
+        q3 = SG.seg_percentile(sv, st[f], n[f], 75)
+        out[f] = q3 - q1
     return out
 
 
@@ -155,23 +176,28 @@ def arm_curvature(c: PolylineContainer, r0, variant: str = 'fig5', curvature: np
     _check(variant)
     c.require('crop')
     reducer = reducer or ('nanmedian' if variant == 'fig5' else 'median')
+    if reducer not in ('median', 'nanmedian'):
+        raise ValueError("reducer must be 'median' or 'nanmedian'")
     F = c.n_frames
     r0 = _r0_per_frame(r0, F)
     if curvature is None:
         _, curvature = G.arm_metrics(c, two_point='nan' if variant == 'fig5' else 'zero')
     ok = valid_frames(c, variant)
     out = np.full(F, np.nan)
-    fo = c.frame_arm_offsets
-    red = np.nanmedian if reducer == 'nanmedian' else np.median
-    for f in np.flatnonzero(ok):
+    if not ok.any():
+        return out
+    st, n = _frame_layout(c)
+    af = c.arm_frame()
+    k = np.asarray(curvature, np.float64)                     # float(k)
+    f = np.flatnonzero(ok)
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
         if variant == 'fig5':
-            scale = c.crop[f, 2] / MODEL_SIZE
-            vals = [float(k) / scale * r0[f] for k in curvature[fo[f]:fo[f + 1]]]
-            out[f] = float(red(vals))
+            vals = k / (c.crop[af, 2] / MODEL_SIZE) * r0[af]  # float(k) / (side / 512) * R0
         else:
-            side = float(c.crop[f, 2])
-            vals = [float(k) * MODEL_SIZE / side for k in curvature[fo[f]:fo[f + 1]]]
-            out[f] = float(red(vals) * r0[f])
+            vals = k * MODEL_SIZE / c.crop[af, 2]             # float(k) * 512 / side
+        sv = SG.seg_sort(vals, st[f], n[f])
+        med = SG.seg_median(sv, st[f], n[f], skipna=reducer == 'nanmedian')
+        out[f] = med if variant == 'fig5' else med * r0[f]
     return out
 
 
@@ -186,33 +212,58 @@ def frame_lists_4b(c: PolylineContainer, arc_length: np.ndarray | None = None,
     nl = G.norm_length(arc_length, c.frame_arm_offsets, r_model)
     kr = curvature * r_model[c.arm_frame()]
     mean = np.full(c.n_frames, np.nan)
-    fo = c.frame_arm_offsets
-    for f in range(c.n_frames):
-        if fo[f + 1] > fo[f]:
-            mean[f] = float(np.mean([float(x) for x in nl[fo[f]:fo[f + 1]]]))
+    st, n = _frame_layout(c)
+    f = np.flatnonzero(n > 0)
+    # np.mean of the frame's float64 values: numpy's pairwise sum, then / n
+    mean[f] = _csr.seg_sum(np.asarray(nl, np.float64), st[f], n[f]) / n[f]
     return {'arm_norm_length': nl, 'arm_curvature_body_radius': kr, 'mean_norm_length': mean}
+
+
+_ISOTROPY_MIN_TIPS = 4          # R.isotropy_frame: NaN with fewer tips
+_ISOTROPY_BLOCK_FRAMES = 1 << 15
 
 
 def tip_isotropy(c: PolylineContainer, centre: str = 'support_centroid_model', min_tips: int = 4) -> np.ndarray:
     """T2.6 (F,) tip isotropy ``sqrt(max(l_min, 0) / max(l_max, 1e-9))`` of the covariance of the arm tips.
 
-    Frames with fewer than ``min_tips`` tips or a non-finite centre are NaN. The value is translation
-    invariant; ``centre`` only decides which frames count (the scripts skip frames with a NaN support
-    centroid). Source: prepare_figure_05_summary.py:96-104.
+    Frames with fewer than ``min_tips`` (and always fewer than 4) tips or a non-finite centre are NaN. The
+    value is translation invariant; ``centre`` only decides which frames count (the scripts skip frames
+    with a NaN support centroid). Source: prepare_figure_05_summary.py:96-104.
+
+    Batched over frames with the scripts' arithmetic: ``np.cov`` (row-by-row mean, centring,
+    ``X @ X.T``, ``* 1 / (n - 1)``) becomes a stacked ``matmul`` of ``X`` with its own transposed view over
+    frames with the same number of tips, and LAPACK ``eigvalsh`` runs on the stacked 2x2 matrices. A
+    closed-form 2x2 eigen solve (or a pairwise-summed covariance) would differ from the BLAS / LAPACK
+    result in the last bits, so neither is used.
     """
     cen = getattr(c, centre)
     if cen is None:
         raise ValueError(f'container lacks {centre}')
     out = np.full(c.n_frames, np.nan)
-    fo, ao, pts = c.frame_arm_offsets, c.arm_point_offsets, c.points
-    for f in range(c.n_frames):
-        if not np.all(np.isfinite(cen[f])):
-            continue
-        n = fo[f + 1] - fo[f]
-        if n < min_tips:
-            continue
-        tips = np.array([pts[ao[a + 1] - 1] for a in range(fo[f], fo[f + 1])]) - cen[f]
-        out[f] = R.isotropy_frame(tips)
+    st, n = _frame_layout(c)
+    sel = np.flatnonzero(np.all(np.isfinite(cen), axis=1) & (n >= max(min_tips, _ISOTROPY_MIN_TIPS)))
+    tip_of_arm = c.arm_point_offsets[1:] - 1
+    for b in range(0, len(sel), _ISOTROPY_BLOCK_FRAMES):
+        f = sel[b:b + _ISOTROPY_BLOCK_FRAMES]
+        nf = n[f]
+        owner = np.repeat(np.arange(len(f)), nf)
+        # tips - centre (float64), the script's (n, 2) array per frame, laid out frame after frame
+        rel = c.points[tip_of_arm[_ranges(st[f], nf)]] - cen[f][owner]
+        seg = SG.seg_starts(nf)
+        # np.cov: X.mean(axis=1) of the (2, n) view, which numpy accumulates tip by tip
+        rel -= (SG.seg_rowsum(rel, seg, nf) / nf[:, None])[owner]
+        cov = np.empty((len(f), 2, 2))
+        for m in np.unique(nf):
+            k = np.flatnonzero(nf == m)
+            x = rel[seg[k][:, None] + np.arange(m)]                  # (G, m, 2) centred tips
+            xt = np.ascontiguousarray(np.swapaxes(x, 1, 2))          # (G, 2, m) = np.cov's X
+            # dot(X, X.T): the second operand must be a transposed view of the same buffer, as in
+            # np.cov, so that BLAS takes the same (symmetric product) path; a separate copy can differ
+            cv = np.matmul(xt, np.swapaxes(xt, 1, 2))
+            cv *= np.true_divide(1, m - 1)
+            cov[k] = cv
+        ev = np.linalg.eigvalsh(cov)
+        out[f] = np.sqrt(np.maximum(ev[:, 0], 0.0) / np.maximum(ev[:, 1], 1e-9))
     return out
 
 

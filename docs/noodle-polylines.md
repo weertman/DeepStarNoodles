@@ -165,7 +165,9 @@ the stored IDs on 1,179 of 1,226 arms. Every output records which IDs it used
 | `baseline` | 5B–D | `scale.r0_baseline(c, onset_s)` | `t − onset ∈ [−300, −60]` s with r > 0; `None` (boundary dropped) with fewer than 30 frames |
 
 Each policy also returns the matching support-area baseline, in source px².
-`scale.in_any_window(t, windows)` is the vectorised closed-window mask.
+`scale.in_any_window(t, windows)` is the closed-window mask: the windows are merged into disjoint
+intervals and the times located with `searchsorted`, so it costs O((n + W) log W) for n times and
+W windows.
 
 ## Presets
 
@@ -216,6 +218,14 @@ work splits by file; the tracker is sequential within a sequence.
 
 The per-arm kernels (`resample_base`, `resample_tip`, `arc_length_curvature`) work on the whole
 CSR array at once, in blocks of 8,192 arms, and give bit-identical results to the per-arm script code.
+The per-frame aggregates (T2) and the tracked kinematics (T3.1, T3.2) are batched over frames in the
+same way. Each frame's median, nanmedian or percentile is taken from a segmented sort. Tip means are
+summed row by row, as `ndarray.mean(0)` does. Covariances and the Kabsch fit run as stacked `matmul`
+and LAPACK calls (`eigvalsh`, `svd`, `det`), which apply the same kernel to every slice. The track
+joins of T3 are sorted-key lookups, which reproduce the scripts' per-frame dicts (the last arm of a
+track in a frame wins). The results are bit-identical to the per-frame loops. A closed-form 2×2
+eigen solve or Kabsch fit would be a little faster, but it differs from LAPACK in the last bits, so
+neither is used. Fig 4D runs each bout window on its own frame span, not on the whole sequence.
 No call keeps derived arrays on a container, so memory is bounded by the call (`compute_all` shares
 its resamples internally and frees them on return). To share them across several calls, open a
 caching scope:

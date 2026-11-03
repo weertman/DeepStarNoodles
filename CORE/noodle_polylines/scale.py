@@ -38,13 +38,38 @@ class R0Result:
     policy: str
 
 
+def merge_windows(windows) -> np.ndarray:
+    """(K, 2) disjoint closed intervals, sorted, whose union is the union of ``windows``.
+
+    Windows with a NaN bound or ``lo > hi`` contain no point (``lo <= t <= hi`` is never true) and are
+    dropped; overlapping or touching windows (``lo2 <= hi1``) are merged."""
+    w = np.asarray(list(windows) if not isinstance(windows, np.ndarray) else windows, np.float64).reshape(-1, 2)
+    w = w[w[:, 0] <= w[:, 1]]                     # also drops NaN bounds
+    if len(w) < 2:
+        return w
+    w = w[np.argsort(w[:, 0], kind='stable')]
+    hi = np.maximum.accumulate(w[:, 1])
+    new = np.ones(len(w), bool)
+    new[1:] = w[1:, 0] > hi[:-1]                  # starts after everything before it ends
+    grp = np.cumsum(new) - 1
+    out = np.empty((int(grp[-1]) + 1, 2))
+    out[:, 0] = w[new, 0]
+    out[:, 1] = np.maximum.reduceat(w[:, 1], np.flatnonzero(new))
+    return out
+
+
 def in_any_window(t: np.ndarray, windows) -> np.ndarray:
-    """(n,) bool: ``lo <= t <= hi`` for any (lo, hi) in ``windows`` (closed intervals)."""
+    """(n,) bool: ``lo <= t <= hi`` for any (lo, hi) in ``windows`` (closed intervals).
+
+    O((n + W) log W): the windows are merged into disjoint intervals and each ``t`` is located with
+    ``searchsorted`` (NaN times are in no window)."""
     t = np.asarray(t, np.float64)
-    w = np.asarray(list(windows), np.float64).reshape(-1, 2)
+    w = merge_windows(windows)
     if not len(w):
         return np.zeros(t.shape, bool)
-    return np.any((t[:, None] >= w[None, :, 0]) & (t[:, None] <= w[None, :, 1]), axis=1)
+    k = np.searchsorted(w[:, 0], t, side='right') - 1          # last interval starting at or before t
+    kk = np.maximum(k, 0)
+    return (k >= 0) & (t <= w[kk, 1]) & (t >= w[kk, 0])
 
 
 def r0_per_frame(c: PolylineContainer) -> R0Result:

@@ -97,11 +97,25 @@ def _window_deformation(c: PolylineContainer, r0, ids: np.ndarray, p: Preset, wi
     per = np.full((len(w), c.n_frames), np.nan)
     first = np.full(c.n_frames, np.nan)
     taken = np.zeros(c.n_frames, bool)
+    r0 = np.asarray(r0, np.float64)
+    fo = c.frame_arm_offsets
     for k, (start, stop) in enumerate(w):
         lo, hi = start - context, stop + context
-        d = KI.arm_deformation(c, r0, ids, lag=p.deformation_lag, shape_order=p.shape_order,
-                               shape_mask=(t >= lo - lookback) & (t <= hi), base=base)
+        mask = (t >= lo - lookback) & (t <= hi)
         inside = (t >= lo) & (t <= hi)
+        pos = np.flatnonzero(mask)
+        if not len(pos):
+            continue
+        # Frames outside the shape mask contribute no shapes, so they only reset or skip the lag
+        # reference: the deformation inside the window depends on the masked frame span alone, and
+        # running on that span gives the same values as a whole-sequence run (O(span), not O(F)).
+        f0, f1 = int(pos[0]), int(pos[-1]) + 1
+        a0, a1 = int(fo[f0]), int(fo[f1])
+        sub = c.select_frames(slice(f0, f1))
+        d_sub = KI.arm_deformation(sub, r0[f0:f1] if r0.ndim else r0, ids[a0:a1], lag=p.deformation_lag,
+                                   shape_order=p.shape_order, shape_mask=mask[f0:f1], base=base[a0:a1])
+        d = np.full(c.n_frames, np.nan)
+        d[f0:f1] = d_sub
         per[k, inside] = d[inside]
         new = inside & ~taken
         first[new] = d[new]
