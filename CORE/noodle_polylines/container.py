@@ -22,9 +22,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, replace
+from dataclasses import fields as fields_of
 import json
 from pathlib import Path
+import struct
 from typing import Any, Iterable
+import zipfile
 
 import numpy as np
 
@@ -242,24 +245,35 @@ class PolylineContainer:
 
     @classmethod
     def load(cls, path: str | Path, meta: dict | None = None, validate: bool = True,
-             strict: bool = True, sidecar: bool | str | Path = False) -> 'PolylineContainer':
+             strict: bool = True, sidecar: bool | str | Path = False, mmap: bool = False,
+             fields: Iterable[str] | None = None) -> 'PolylineContainer':
         """Read a container ``.npz`` with ``allow_pickle=False``.
 
         ``sidecar``: merge a JSON metadata file into meta (the npz's own ``meta_json`` and ``meta=`` win).
         ``True`` reads the sibling ``<stem>.json`` (e.g. the micro example's), a path reads that file. It is
         never read implicitly: a sibling JSON may be an unrelated payload (an ``infer_video`` output next to
         its converted container). The sidecar must be a JSON object without a ``frames`` key.
-        Unknown arrays raise unless ``strict=False`` (then they are ignored)."""
+        Unknown arrays raise unless ``strict=False`` (then they are ignored).
+
+        ``mmap=True`` memory-maps every array stored uncompressed (``save(..., compressed=False)``)
+        read-only instead of reading it: loading costs only the headers and pages are read when touched,
+        so a pool of workers shares one page-cache copy. Compressed members are read as usual.
+        ``fields`` restricts the optional per-frame / per-arm fields read (the CSR arrays and
+        ``frame_index`` are always read), e.g. ``fields=('time_s', 'track_id')`` for a job that needs no
+        identity or crop. Validation touches every point; pass ``validate=False`` to keep a mapped load lazy.
+        """
         path = Path(path)
-        with np.load(path, allow_pickle=False) as z:
-            arrays = {k: z[k] for k in z.files}
+        known = {f.name for f in fields_of(cls)}
+        want = None if fields is None else set(fields) | set(REQUIRED_FIELDS) | {'meta_json'}
+        if want is not None and not want - {'meta_json'} <= known:
+            raise ContainerError(f'unknown field(s) {sorted(want - known - {"meta_json"})}')
+        arrays = _read_npz(path, want, mmap)
         m = json.loads(str(arrays.pop('meta_json'))) if 'meta_json' in arrays else {}
         if sidecar is not False and sidecar is not None:
             side = path.with_suffix('.json') if sidecar is True else Path(sidecar)
             m = {**read_sidecar(side), **m}
         if meta:
             m.update(meta)
-        known = {f.name for f in fields(cls)}
         unknown = set(arrays) - known
         if unknown and not strict:
             arrays = {k: v for k, v in arrays.items() if k in known}
@@ -299,6 +313,52 @@ class PolylineContainer:
 
     def with_fields(self, **kw) -> 'PolylineContainer':
         return replace(self, **kw)
+
+
+REQUIRED_FIELDS = ('points', 'arm_point_offsets', 'frame_arm_offsets', 'frame_index')
+
+
+def _read_npz(path: Path, names: set[str] | None, mmap: bool) -> dict[str, np.ndarray]:
+    """The npz members named in ``names`` (all when None), pickle-free; uncompressed members are
+    memory-mapped read-only when ``mmap``. Object arrays raise, as ``np.load(allow_pickle=False)``."""
+    with np.load(path, allow_pickle=False) as z:
+        keys = [k for k in z.files if names is None or k in names]
+        if not mmap:
+            return {k: z[k] for k in keys}
+        mapped = _npz_member_maps(path, set(keys))
+        return {k: mapped[k] if k in mapped else z[k] for k in keys}
+
+
+def _npz_member_maps(path: Path, keys: set[str]) -> dict[str, np.ndarray]:
+    """Read-only ``np.memmap`` views of the stored (uncompressed) ``.npy`` members of an npz."""
+    out: dict[str, np.ndarray] = {}
+    with zipfile.ZipFile(path) as zf, open(path, 'rb') as fh:
+        for info in zf.infolist():
+            name = info.filename[:-4] if info.filename.endswith('.npy') else info.filename
+            if name not in keys or info.compress_type != zipfile.ZIP_STORED or info.flag_bits & 0x1:
+                continue
+            fh.seek(info.header_offset)
+            local = fh.read(30)
+            if len(local) != 30 or local[:4] != b'PK\x03\x04':
+                continue
+            n_name, n_extra = struct.unpack('<HH', local[26:30])
+            fh.seek(info.header_offset + 30 + n_name + n_extra)
+            try:
+                version = np.lib.format.read_magic(fh)
+                if version == (1, 0):
+                    shape, fortran, dtype = np.lib.format.read_array_header_1_0(fh)
+                elif version == (2, 0):
+                    shape, fortran, dtype = np.lib.format.read_array_header_2_0(fh)
+                else:
+                    continue
+            except ValueError:
+                continue
+            if dtype.hasobject or not shape or 0 in shape:
+                continue          # objects raise in the normal read; scalars and empties are read
+            arr = np.memmap(path, dtype=dtype, mode='r', offset=fh.tell(), shape=shape,
+                            order='F' if fortran else 'C')
+            out[name] = arr.view(np.ndarray)
+    return out
 
 
 def read_sidecar(path: str | Path) -> dict:

@@ -900,3 +900,247 @@ tracker (`_assoc.span_dist_rows` and `ArrayTracker.step`, as at round 3).
   bit-identical**, as in rounds 1–3.
 - `pytest tests/test_noodle_polylines*.py`: **116 passed** (109 + 7 new cases from 4 new test functions). The
   micro example runs, and its printed output is identical to round 3's.
+
+## Round 5: I/O and scale-out
+
+### Where the time went
+
+Rounds 1–4 made the representations cheap: Fig 5 with stored IDs is 3.5 µs/arm. Profiling the
+whole path from a file on disk then showed that reading the inputs cost more than computing
+from them:
+
+| Path (round 4, CPU µs/arm) | Read | Compute (Fig 5, stored IDs) |
+|---|---:|---:|
+| Backcast runner records (`*.jsonl`, round-16 pods; 60 files, 190,861 arms) | 53.5 | 3.5 |
+| Released flipping clip (CSV + pickled npz; 7 clips, 65,953 arms) | 16.2 | 3.5 |
+| Sleepy segment (compressed npz; 36 segments, 107,481 arms) | 2.6 | (re-link) |
+| Container `.npz`, compressed (synthetic, 1e6 arms) | 1.3 | 3.6 |
+
+The backcast records are what a camera-year will arrive as, so their adapter is the largest
+remaining cost: about 4.5 CPU-h per camera-year against 0.3 CPU-h for the Fig 5 representations.
+
+The real records' profile (round-4 adapter, 10.8 s under cProfile): `json.loads` 73%,
+per-arm `np.asarray` of the polyline and identity lists 10%, the adapter's own loop 9%. About half of the numbers in a record are `polyline_source` and
+`mask_polygon_source` (≈ 26 points per polyline and ≈ 250 per star mask), which the adapter
+never reads. Parsing decimal text to doubles costs about 0.2 µs per number whatever does it
+(per 1e6 float32-valued numbers: `json.loads` 0.23 s, `np.fromstring` 0.21 s, `np.loadtxt` 0.23 s),
+so the only lever is not to parse what is not needed.
+
+### What changed and why
+
+All in `CORE/noodle_polylines/adapters.py`, `container.py` and `pipeline.py`; no kernel changed.
+
+- **Inference adapter.**
+  - The values of `"polyline_source"` and `"mask_polygon_source"` are cut from the text before
+    `json.loads` (`_drop_unused_arrays`, one regex pass, `skip_unused=True` by default). The cut is
+    exact for valid JSON: the key cannot match inside a string (quotes there are escaped), it must
+    follow `{` or `,`, and the matched span runs greedily over number, bracket, comma and whitespace
+    characters and backs off to the last `]]`, which in a valid document is the value's own end.
+    `null`, `NaN`, flat or empty arrays are left to `json.loads`. The one behaviour change is that
+    a malformed number inside a cut array is no longer reported; `skip_unused=False` parses
+    everything.
+  - Polylines and identities are converted once per star, not once per arm: every number goes
+    through one `np.fromiter` (float64, then cast to float32), the same single rounding as the
+    per-arm `np.asarray(p, np.float32)`. Any shape the per-arm code would treat differently (flat
+    lists, deeper nesting, wrong widths, non-lists) falls back to the per-arm conversion and its
+    errors.
+  - `.gz`, `.bz2`, `.xz` (stdlib) and `.zst` (Python 3.14's `compression.zstd`, else the optional
+    `zstandard` package, else a clear `ImportError`) are read directly; the runner writes
+    `*.jsonl.zst`.
+- **Flipping adapter.** One `np.loadtxt` call per CSV with a structured dtype of only the needed
+  columns replaces `csv.DictReader` and a Python `float()` per cell. numpy's text-to-double
+  conversion is correctly rounded like `float()`; the CSV reader follows the csv module's quoting,
+  treats `#` as text, and lets the last of duplicate header names win as a `DictReader` row does.
+  The sort by (frame, arm_index) is a stable `lexsort`, and the row → polyline and frame →
+  position dicts are `unique`/`searchsorted` lookups that keep the dicts' last-one-wins rule and
+  raise `KeyError` on a missing key.
+- **Sleepy adapter.** Only the 17 members the container uses are decompressed (not `mouth`,
+  `anus`, `arm_length_px`, …), and stop reasons are mapped once per distinct text.
+- **Container loads.** `PolylineContainer.load(path, mmap=True)` memory-maps every member stored
+  uncompressed (`save(..., compressed=False)`) read-only, from the member's offset in the zip; a
+  compressed member is read as before. `fields=(...)` reads only the named optional fields.
+  `load_any` passes `mmap`, `fields` and `validate` on to `load`.
+- **Pool.** `compute_many(..., workers=N)` runs sequences in a process pool and yields results in
+  input order, with at most `max_pending` (default `2 * N`) sequences in flight or waiting. Each
+  sequence is loaded and computed by the same function serially or pooled, so the outputs are
+  identical (checked bit for bit). `out_dir=` makes each worker write `<name>.npz` and return only
+  the path.
+- **Bench.** `bench.py` gained I/O kernels (adapters, container loads, file → Fig 5), a
+  `--pool-workers` scaling run that checks every pooled output against the serial run, written
+  bytes per arm, and `NOODLE_POLYLINES_CORE=<dir>` to time another checkout with the same harness.
+  `write_backcast_jsonl` writes runner-shaped records (with source polylines and a 250-point mask
+  per star) from any container, so the JSON path is benchmarked without private data.
+
+### Exactness
+
+- **All released data, adapters old against new** (scratch scripts, not committed): all 44
+  flipping clips × {runtime origin, support origin, frames 640–820} and all 192 Sleepy segments ×
+  {runtime, support} give byte-identical containers (every field, dtype and meta).
+- **Real backcast records**: 60 files of round-16 pod output (190,861 arms; `star_track_id` set
+  from `detection_index`, see below), plus indented, compact and multi-star JSON, give
+  byte-identical containers with `skip_unused` on and off, and from `.gz`.
+- **New tests** (`tests/test_noodle_polylines_io.py`, 13 cases): the round-4 per-cell and per-arm
+  readers are kept in the test file as oracles. They cover tricky decimal texts (signed zero,
+  subnormals, 17+ digits, `nan`, `inf`), quoting, `#`, duplicate headers and header-only files;
+  out-of-order rows, duplicate `row_id`s, frame ranges and missing columns; skipper edge cases
+  (the key text inside a string, `null`, `NaN`, flat, empty and deeper arrays, indentation);
+  polyline fallbacks; a missing `.zst` decoder; mapped and partial loads, including Fig 5 outputs
+  from a mapped container; and pooled `compute_many` against serial, its ordering, `out_dir` and
+  error propagation.
+- `parity_check.py`, unchanged, full gate: **4,213 checks, 0 failed, 3,773 bit-identical**,
+  the same as round 4. Its `A-FLIP adapter.*` rows (13 fields, on micro and on the 7 clips)
+  compare the new flipping adapter with the store's input containers, exactly. Near-tie audit unchanged (39,953 LSA calls, smallest margin
+  7.6e-4).
+- `pytest tests/test_noodle_polylines*.py`: **129 passed** (116 + 13). The micro example runs.
+
+### Float32 / float64 audit
+
+- **Storage is lossless.** All 10,015,474 `polyline_crop` numbers and 1,526,888 identity numbers
+  of the 60 backcast files are exact float32 values (the runner writes float32 arrays with
+  `tolist()`), so the container's float32 points and identities lose nothing. The released
+  flipping polylines are float32 in their npz, and the Sleepy points are float32.
+- **Memory per arm** (subset, 26.4 points per arm): 280 B in RAM, of which points 212 B,
+  identity 32 B, arm offsets 8 B, track ID 8 B for arms that have one, and the pass-through scores
+  and per-frame fields the rest. On disk: 270–282 B uncompressed and 213–221 B compressed
+  (float32 coordinates compress poorly). Offsets stay int64: a camera-year holds about 8e9 points.
+- **Compute precision** is the figure scripts' (unchanged): float32 for the per-arm arc length and
+  curvature and the tip-first cumulative length; float64 for the base-first resample (cast block by
+  block, 8,192 arms at a time, never the whole point array), the rigid fit, medians and every
+  per-frame output. Fig 5 outputs take 73 B per arm (float64 and int64); halving that with float32
+  would break the gate's bit-identity, so it is not offered.
+
+### Run
+
+| | |
+|---|---|
+| Date | 2026-11-03 |
+| CPU | Intel Xeon W-3365, 64 cores (shared workstation, load average 1.0–2.3) |
+| Software | Python 3.12.13, numpy 2.4.3, scipy 1.17.1 |
+| Before | `ab5db53` (round 4) `CORE`, timed by this round's `bench.py` (`NOODLE_POLYLINES_CORE`) |
+| After | this commit |
+
+```
+# before, then after, sequential (K = "IO ,E2E file,E2E compute_all fig5 (stored,T0.2 resample_base")
+NOODLE_POLYLINES_CORE=<ab5db53>/CORE OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py \
+    --inputs micro,subset,synthetic --data-dir RUNS/paper_retrace_f39dc82b --synthetic-arms 1000000 \
+    --repeats 5 --jobs 1 --kernels "$K"
+OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py ... (same) --profile profile_after.txt
+# large synthetic: 1e7 arms, then fig5 + relink and the pool
+OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs synthetic --synthetic-arms 10000000 \
+    --repeats 5 --jobs 1 --kernels "T0.2 resample_base,T0.3+T1.1,T3.1 arm_deformation lag B,E2E compute_all fig5 (stored,E2E compute_all fig4d,IO container,E2E file"
+OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs synthetic --synthetic-arms 10000000 \
+    --repeats 3 --jobs 1 --kernels "E2E compute_all fig5 + relink" --pool-workers 1,8,32 --pool-repeats 3
+```
+
+- **Timings.** CPU µs/arm, best of 5 after one warm-up, each job in a fresh single-threaded
+  process, `--jobs 1`, runs never overlapping. I/O files are written untimed to a temporary
+  directory first, so timed reads come from the page cache. Kernels this round did not touch came
+  out equal: resample_base 1.66 → 1.67 (subset) and 1.43 → 1.42 (synthetic), Fig 5 with stored IDs
+  3.58 → 3.59 (synthetic). Read the speed-ups as ±5%, except the JSON row: a second "before" run
+  of it gave 64.6 instead of 57.4 µs/arm, so read that one as ±12%.
+- **Inputs.** As in rounds 1–4 (micro 1,226 arms; subset 173,434 arms; synthetic 1,040,604 arms),
+  plus a 1e7 synthetic (the subset tiled 58×: 10,059,172 arms in 43 sequences). Each adapter row is
+  per arm it reads (flipping 65,953, Sleepy 107,481). The first "before" run divided the two
+  adapter rows by all subset arms; they were rerun with the fixed harness and those reruns are
+  quoted.
+
+### Per kernel (before → after, CPU µs/arm)
+
+| Kernel | Micro | Subset | Synthetic 1e6 | Speed-up | Kernel +MB, subset |
+|---|---:|---:|---:|---:|---:|
+| **IO adapter: inference JSONL (runner-shaped records)** | 60.15 → 33.08 | 57.36 → 35.41 | — | **1.82× / 1.62×** | 62 → 103 |
+| IO adapter: real round-16 records (60 files, scratch script) | | 53.5 → 33.9 | | **1.58×** | |
+| **IO adapter: flipping clips (CSV + pickled npz)** | — | 16.22 → 6.10 | — | **2.66×** | 23 → −1 |
+| IO adapter: Sleepy segments (npz) | — | 2.60 → 2.05 | — | 1.27× | 7 → 0 |
+| IO container load, compressed (unchanged path) | 2.88 → 2.97 | 1.77 → 1.73 | 1.31 → 1.27 | — | |
+| IO container load, uncompressed (unchanged path) | 1.34 → 1.52 | 0.58 → 0.55 | 0.26 → 0.25 | — | |
+| *new:* IO container load, mmap (no validation) | 1.51 | 0.44 | **0.06** | 22× vs compressed | |
+| *new:* IO container load, mmap + validation | 1.70 | 0.53 | 0.09 | 14× vs compressed | |
+| **E2E file → Fig 5 (stored IDs)**: compressed before → mmap after | 8.92 → 8.19 | 15.78 → 14.03* | 4.94 → 3.73 | **1.32×** (synthetic) | |
+
+\* The subset row re-links its 36 Sleepy segments, so the tracker dominates it.
+
+The inference adapter's subset memory growth rises from 62 to 103 MB: the polylines of a star are
+now held as Python lists until one conversion at the end, rather than as small arrays. That is
+about 0.24 kB per arm of the file being read, released when its containers are built.
+
+Whole-process peak RSS with the subset built by the adapters fell from 173–177 MB to 149–156 MB
+(the CSV rows are no longer held as dicts).
+
+### Large synthetic (1e7 arms, 43 sequences)
+
+| Kernel | CPU µs/arm at 1e7 | at 1e6 (this round or round 4) | Peak RSS, MB (build 2,742) | Kernel +MB |
+|---|---:|---:|---:|---:|
+| T0.2 resample_base | 1.43 | 1.42 | 2,892 | 149 |
+| T0.3+T1.1 arc_length_curvature | 1.08 | 1.10 (round 1) | 2,743 | 0 |
+| T3.1 arm_deformation lag B | 1.93 | 2.01 (round 4) | 2,812 | 69 |
+| E2E compute_all fig5 (stored IDs) | 3.54 | 3.59 | 2,843 | 100 |
+| E2E compute_all fig4d (bout windows) | 3.42 | 3.03 (round 4) | 3,698 | **956** |
+| E2E compute_all fig5 + relink | 20.04 | 20.25 (round 4) | 2,895 | 153 |
+| IO container load: compressed / uncompressed | 1.24 / 0.22 | 1.27 / 0.25 | | 1,766 / 1,825 |
+| IO container load: mmap / mmap + validation | **0.006** / 0.034 | 0.06 / 0.09 | | 0 / 2,241† |
+| E2E file → Fig 5: compressed / mmap | 4.73 / **3.59** | 4.91 / 3.73 | | 131 / 121 |
+
+Per-arm costs are flat from 1e6 to 1e7 arms: every kernel scales linearly, and memory grows with
+the largest sequence, not with the input set. Loading a mapped 1e7-arm set takes 58 ms (headers
+only). † Validation touches every mapped page, which RSS counts; those pages are file-backed page
+cache, shared across processes and reclaimable, unlike the 1.8 GB of private arrays of a normal load.
+
+Fig 4D is the exception. Its per-window outputs (`arm_deformation_window`, `log_deformation_window`)
+are dense (W, F) arrays. The bench puts a bout every 120 s, so the longest tiled sequence (97k
+frames, 406 windows) needs about 0.3 GB per array. The paper's panels have a handful of bouts,
+but a camera-year run with many windows on day-long sequences would need a sparse form. That is
+an output-shape change, so it is left for a decision rather than made here.
+
+### Pool scaling (1e7 arms, Fig 5 with stored IDs, mmap loads, wall clock)
+
+| Workers | Wall µs/arm | Speed-up | Identical to serial |
+|---:|---:|---:|---|
+| 1 | 3.60 | 1.0× | yes |
+| 8 | 0.72 | 5.0× | yes (every array, bit for bit) |
+| 32 | 0.60 (0.52 in a repeat) | 6.0–6.9× | yes |
+
+The ceiling here is the input, not the pool: the largest of the 43 sequences holds 6.5% of the
+arms, which caps the speed-up at about 15×. Results also travel back to the parent (73 B per
+arm). `out_dir=` avoids that transfer but costs more than it saves, because each worker writes a
+compressed npz (1.11 and 0.70 µs/arm at 8 and 32 workers). Ordering the paths largest first
+changed nothing at this size. A camera-year split by video file, at thousands of sequences, does
+not have this ceiling.
+
+### Camera-year projection (3e8 arms)
+
+| Workload (CPU-h, one core) | Round 4 | Round 5 |
+|---|---:|---:|
+| **Convert backcast records → containers** (runner-shaped / real records) | 4.8 / 4.5 | **3.0 / 2.8** |
+| Load the containers (compressed npz → mmap of uncompressed npz; 1e7 basis) | 0.10 | **0.0005** |
+| Fig 5 representations from container files, stored IDs (1e7 basis) | 0.39 | **0.30** |
+| Fig 4D representations, stored IDs (1e7 basis; code unchanged) | 0.29 | 0.29 |
+| Fig 5 representations with a re-link (1e7 basis; code unchanged) | 1.67 | 1.67 |
+| **Whole path from backcast records**: convert, re-link, Fig 5 | 6.5 | **4.6** |
+
+The 1e7 basis replaces round 4's subset and 1e6 bases for the unchanged rows (round 4 quoted
+0.31 and 1.78 CPU-h on those); the per-arm costs agree within 6–13%, the subset's Sleepy
+segments being a little dearer. Files are independent, so the whole path splits across workers:
+ideally 4.6 / 32 ≈ 0.15 wall-hours per camera-year on 32 workers when the files are many and
+similar in size (this bench's 43 unequal sequences reached 6×, above). A converted container
+set is read back for any further preset at 0.3 CPU-h per pass (stored IDs).
+
+### Hotspots after round 5
+
+- **Text parsing**, 22 of the 34 µs/arm of the backcast conversion. What remains is
+  `json.loads` of `polyline_crop`, `identity` and the record skeleton. Text-to-double conversion is
+  the floor (≈ 0.2 µs per number), so the next step would be a binary inference output (float32
+  CSR, the container itself) or an optional fast parser, both outside this package's scope.
+- **The tracker**: `_assoc.span_dist_rows` and `ArrayTracker.step` (≈ 73% of the subset
+  profile of Fig 5 + re-link), unchanged since round 3.
+- **The representations**: 3.5 µs/arm (Fig 5, stored IDs), led by the base resample and the arc
+  metrics as at round 4.
+
+### Findings for the camera-year (not changed here)
+
+- The round-16 backcast records have `"star_track_id": null` (the runner runs without its live
+  star tracker) and carry `arm_index` instead of `track_id`. `from_inference_json` refuses
+  null star IDs, as it did before, because stars cannot be told apart in multi-star frames (3,433 of
+  7,340 frames in the 60 files have two or more detections). These records need a star association
+  before conversion, and then an arm re-link (the "with a re-link" rows above).
+- Fig 4D's dense (W, F) window outputs (above).

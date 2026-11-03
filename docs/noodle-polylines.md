@@ -51,6 +51,20 @@ the sibling `<stem>.json` (as the micro example ships its metadata); it is never
 implicitly, because a sibling JSON may be an unrelated file such as the `infer_video`
 output the container was converted from.
 
+For large data, save containers uncompressed (`c.save(path, compressed=False)`, about
+280 B per arm against about 215 B compressed) and load them with `load(path, mmap=True)`:
+every stored array is then memory-mapped read-only, so loading reads only the headers and a
+pool of workers shares one page-cache copy. `validate=False` keeps the load lazy (validation
+reads every point). `fields=('time_s', 'track_id')` reads only the named optional fields;
+the CSR arrays and `frame_index` are always read.
+
+Precision. The tracer's polylines and identities are float32 values (all 10.0 million
+polyline numbers and 1.5 million identity numbers of the round-16 backcast records are exact
+float32 values), so float32 storage loses nothing. Computations use the dtype of the figure
+script they reproduce: float32 for the per-arm arc length and curvature and the tip-first
+resample's cumulative length, float64 for the base-first resample, the rigid fit, the medians
+and every per-frame output. Offsets are int64 because a camera-year holds about 8e9 points.
+
 The data have two "centres" per frame, and the difference is deliberate:
 
 - The **runtime body origin** (`body_origin_model`) is the origin of every arm-relative
@@ -67,8 +81,8 @@ Each adapter runs once, offline.
 |---|---|
 | `adapters.from_flipping_clip(folder, frame_range=None)` | released flipping clip: `_frames.csv`, `_arms.csv` and `_polylines.npz` |
 | `adapters.from_sleepy_segment(path)` | Sleepy Stars `seg_*.npz` (already CSR) |
-| `adapters.from_inference_json(path, fps=None)` | `SCRIPTS/infer_video.py` output, as single-star JSON, multi-star schema-2 JSON or JSON Lines |
-| `adapters.load_any(path)` | picks one of the above |
+| `adapters.from_inference_json(path, fps=None, skip_unused=True)` | `SCRIPTS/infer_video.py` output, as single-star JSON, multi-star schema-2 JSON or JSON Lines, plain or `.gz`, `.bz2`, `.xz`, `.zst` |
+| `adapters.load_any(path, **kw)` | picks one of the above; for a container `.npz` it passes `mmap`, `fields` and `validate` to `load` |
 
 - **Flipping.** The clip's `_polylines.npz` is a pickled object array, so this adapter is the
   only place that reads with `allow_pickle=True`. Use it only on re-traces you produced
@@ -77,7 +91,18 @@ Each adapter runs once, offline.
 - **Inference.** The output is split into one container per `star_track_id`. Inference records
   have no body origin, timestamp or support area, so only non-body-relative T0/T1 and the
   association can be computed from them. If any arm lacks `identity`, that star's
-  `identity` is `None`, and a re-link raises `ContainerError`.
+  `identity` is `None`, and a re-link raises `ContainerError`. The `polyline_source` and
+  `mask_polygon_source` arrays are never used; by default their text is cut before
+  `json.loads` (about half the numbers of a backcast record), which gives the same container.
+  Only a malformed number inside a cut array goes unreported; `skip_unused=False` parses
+  everything. `.zst` needs Python 3.14 or the optional `zstandard` package. Records whose
+  `star_track_id` is `null` (the backcast runner without its live star tracker) are refused,
+  as before: they need a star association first.
+
+The CSV adapter parses the columns it needs in one `np.loadtxt` pass. Every value equals
+`float()` or `int()` of its text, as the figure scripts parse it, and the converted
+containers of all 44 released flipping clips and all 192 Sleepy segments are byte-identical to
+the per-cell readers' (checked in round 5).
 
 Helpers:
 
@@ -228,7 +253,19 @@ for name, out in compute_many(paths, 'fig5', context={'seg_x': {'onset_s': 1.78e
 ```
 
 This loads one container at a time, so memory is bounded by the largest sequence. Parallel
-work splits by file; the tracker is sequential within a sequence.
+work splits by file; the tracker is sequential within a sequence:
+
+```python
+for name, path in compute_many(paths, 'fig5', r0=50.0, workers=32, load_kw={'mmap': True},
+                               out_dir='outputs/'):
+    ...
+```
+
+With `workers` > 1 the sequences run in a process pool. Results are bit-identical to the
+serial run and come back in input order; at most `max_pending` (default `2 * workers`)
+sequences are in flight, so memory is bounded by about that many sequences. With `out_dir`
+each worker writes `<name>.npz` and only the path comes back. Set `OMP_NUM_THREADS=1` before
+starting Python so the workers do not oversubscribe the cores.
 
 The per-arm kernels (`resample_base`, `resample_tip`, `arc_length_curvature`) work on the whole
 CSR array at once, in blocks of 8,192 arms, and give bit-identical results to the per-arm script code.

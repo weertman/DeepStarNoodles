@@ -21,6 +21,13 @@ earlier repeat (the cache is also cleared before every call, in case a scope is 
 > 1 runs jobs concurrently, which inflates timings through contention; use ``--jobs 1`` for numbers you
 report. Memory: RSS after building the input, and the kernel's own peak (VmHWM reset after the build
 via /proc/self/clear_refs on Linux).
+I/O kernels (round 5) time file -> container paths in the same way: the released adapters (subset), the
+inference JSONL adapter on backcast-like records written from the input (micro, subset), and container
+loads (compressed, uncompressed, memory-mapped) and file -> Fig 5 outputs (all inputs). Files are written
+untimed to a temporary directory first, so the timed reads come from the page cache (no disk latency).
+``--pool-workers 1,8,32`` times ``compute_many`` over the input's sequences by worker count (wall clock)
+and checks every pooled output against the serial run, bit for bit. ``NOODLE_POLYLINES_CORE=<dir>`` runs
+the harness against another checkout's ``CORE`` (kernels its API lacks are skipped).
 Metrics: arms/s and frames/s of the input set; the projection multiplies the per-arm CPU time by
 3e8 arms (one camera-year at ~1 fps) and reports CPU-hours, preferring the real subset over synthetic.
 """
@@ -38,12 +45,14 @@ import platform
 import pstats
 import resource
 import sys
+import tempfile
 import time
 
 for _v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
     os.environ[_v] = '1'
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'CORE'))
+# NOODLE_POLYLINES_CORE times another checkout's implementation with this harness (before/after runs)
+sys.path.insert(0, os.environ.get('NOODLE_POLYLINES_CORE', str(ROOT / 'CORE')))
 
 import numpy as np  # noqa: E402
 
@@ -52,6 +61,7 @@ from noodle_polylines import frames as FR, geometry as G, kinematics as KI, scal
 from noodle_polylines.container import PolylineContainer, _offsets  # noqa: E402
 
 EXAMPLE = ROOT / 'examples' / 'noodle_polylines' / 'data' / 'flip_example_01.npz'
+_HAS_ROUND5_IO = 'mmap' in PolylineContainer.load.__code__.co_varnames    # round-5 loaders and pool
 CAMERA_YEAR_ARMS = 3e8
 R0 = 50.0
 
@@ -240,28 +250,151 @@ def run_kernel(spec: dict, kernel: str, repeats: int, warmup: int = 1) -> dict:
             'cpu_us_per_arm': 1e6 * min(cpus) / d['arms'], 'load_wall_s': load_wall, **d}
 
 
-def run_io(spec: dict, repeats: int) -> list[dict]:
-    """Adapter / container I/O timings."""
-    out = []
-    if spec['input'] == 'micro':
-        fn = lambda: load_micro()  # noqa: E731
-        name = 'IO container npz load (allow_pickle=False)'
-    elif spec['input'] == 'subset':
-        fn = lambda: load_subset(Path(spec['data_dir']), spec['n_flip'], spec['n_sleepy'])  # noqa: E731
-        name = 'IO adapters (flipping CSV+pickle, Sleepy npz)'
-    else:
-        return out
-    walls, cpus = [], []
-    for _ in range(repeats):
-        t0, c0 = time.perf_counter(), time.process_time()
-        cs = fn()
-        walls.append(time.perf_counter() - t0)
-        cpus.append(time.process_time() - c0)
+def write_backcast_jsonl(c: PolylineContainer, path: Path, seed: int = 7) -> Path:
+    """One star's frames as backcast-runner records (compact JSON Lines, one multi-star record per frame).
+
+    Mirrors the shape of the runner's records (round 16: ~26 points per polyline, ~250 mask points per
+    star): ``polyline_crop`` and ``identity`` from the container, and the arrays the adapter never reads
+    (``polyline_source``, ``mask_polygon_source``) filled with float32 source-px values."""
+    rng = np.random.default_rng(seed)
+    ring = np.stack([np.cos(np.linspace(0, 2 * np.pi, 250)), np.sin(np.linspace(0, 2 * np.pi, 250))], 1)
+    tid = c.track_id if c.track_id is not None else np.arange(c.n_arms)
+    ident = c.identity if c.identity is not None else np.zeros((c.n_arms, 8), np.float32)
+    lines = []
+    for f in range(c.n_frames):
+        left, top, side = (float(v) for v in c.crop[f]) if c.crop is not None else (0.0, 0.0, 512.0)
+        scale = np.float32(side / 512)
+        arms = []
+        for a in c.frame_arms(f):
+            p = c.arm(a)
+            src = np.stack([p[:, 0] * scale + left, p[:, 1] * scale + top], 1).astype(np.float32)
+            arms.append({'polyline_crop': p.tolist(), 'polyline_source': src.tolist(), 'identity': ident[a].tolist(),
+                         'stop_reason': 'base', 'steps': int(len(p)), 'state_confidence': float(rng.random()),
+                         'tip_score': float(rng.random()), 'base_score': float(rng.random()),
+                         'length_px': float(len(p) * 4.0), 'track_id': int(tid[a])})
+        mask = (ring * side * 0.3 + (left + side / 2, top + side / 2)).astype(np.float32)
+        stars = [] if not arms and not c.star_mask()[f] else [{
+            'detection_index': 0, 'star_track_id': 0,
+            'crop': {'left': left, 'top': top, 'side': side, 'confidence': 0.9, 'bbox_xyxy': [left, top, left + side, top + side]},
+            'mask_polygon_source': mask.tolist(), 'arms': arms}]
+        lines.append(json.dumps({'frame': int(c.frame_index[f]), 'image_path': f'v#{int(c.frame_index[f]):06d}',
+                                 'source_shape': [1200, 1920], 'stars': stars, 'video': 'v'},
+                                separators=(',', ':'), allow_nan=False))
+    path.write_text('\n'.join(lines) + '\n')
+    return path
+
+
+IO_KERNELS = {
+    # name: (inputs it applies to, needs round-5 API)
+    'IO adapter: flipping clips (CSV + pickled npz)': ({'subset'}, False),
+    'IO adapter: Sleepy segments (npz)': ({'subset'}, False),
+    'IO adapter: inference JSONL (backcast-like)': ({'micro', 'subset'}, False),
+    'IO container load (compressed npz)': ({'micro', 'subset', 'synthetic'}, False),
+    'IO container load (uncompressed npz)': ({'micro', 'subset', 'synthetic'}, False),
+    'IO container load (mmap, no validation)': ({'micro', 'subset', 'synthetic'}, True),
+    'IO container load (mmap + validation)': ({'micro', 'subset', 'synthetic'}, True),
+    'E2E file -> fig5 (compressed container)': ({'micro', 'subset', 'synthetic'}, False),
+    'E2E file -> fig5 (mmap container)': ({'micro', 'subset', 'synthetic'}, True),
+}
+
+
+def _io_setup(spec: dict, kernel: str, tmp: Path):
+    """(load function returning containers, the containers it should reproduce) for one I/O kernel."""
+    if kernel.startswith('IO adapter: flipping') or kernel.startswith('IO adapter: Sleepy'):
+        data_dir = Path(spec['data_dir'])
+        rows = list(csv.DictReader((data_dir / 'flipping' / 'manifest.csv').open()))
+        if 'flipping' in kernel:
+            folders = [data_dir / 'flipping' / 'clips' / r['clip_id']
+                       for r in sorted(rows, key=lambda r: r['clip_id'])[:spec['n_flip']]]
+            return lambda: [NP.adapters.from_flipping_clip(f) for f in folders]
+        segs = sorted((data_dir / 'sleepy_q_to_sa').glob('seg_*.npz'))[:spec['n_sleepy']]
+        return lambda: [NP.adapters.from_sleepy_segment(s) for s in segs]
+    cs = _build(spec)
+    if kernel.startswith('IO adapter: inference'):
+        files = [write_backcast_jsonl(c, tmp / f'seq{i:03d}.jsonl') for i, c in enumerate(cs)]
+        fps = [c.fps for c in cs]
+        return lambda: [c for f, r in zip(files, fps) for c in NP.adapters.from_inference_json(f, fps=r).values()]
+    compressed = 'compressed container' in kernel or kernel == 'IO container load (compressed npz)'
+    files = [c.save(tmp / f'seq{i:03d}.npz', compressed=compressed) for i, c in enumerate(cs)]
+    del cs
+    if kernel == 'IO container load (compressed npz)' or kernel == 'IO container load (uncompressed npz)':
+        return lambda: [PolylineContainer.load(f) for f in files]
+    if kernel == 'IO container load (mmap, no validation)':
+        return lambda: [PolylineContainer.load(f, mmap=True, validate=False) for f in files]
+    if kernel == 'IO container load (mmap + validation)':
+        return lambda: [PolylineContainer.load(f, mmap=True) for f in files]
+    if kernel == 'E2E file -> fig5 (compressed container)':
+        return lambda: [len(_fig5(PolylineContainer.load(f))) for f in files]
+    if kernel == 'E2E file -> fig5 (mmap container)':
+        return lambda: [len(_fig5(PolylineContainer.load(f, mmap=True))) for f in files]
+    raise KeyError(kernel)
+
+
+def run_io_kernel(spec: dict, kernel: str, repeats: int, warmup: int = 1) -> dict | None:
+    """Time one file -> container (or file -> outputs) path in this fresh process. The files are written
+    first (untimed) to a temporary directory; reads after the first come from the page cache."""
+    if IO_KERNELS[kernel][1] and not _HAS_ROUND5_IO:
+        return None
+    cs = _build(spec)
     d = describe(cs)
-    out.append({'input': spec['input'], 'kernel': name, 'repeats': repeats, 'wall_s_best': min(walls),
-                'wall_s_all': walls, 'cpu_s_best': min(cpus), 'peak_rss_io_mb': _peak_rss_mb(),
-                'arms_per_s': d['arms'] / min(walls), 'frames_per_s': d['frames'] / min(walls),
-                'us_per_arm': 1e6 * min(walls) / d['arms'], 'cpu_us_per_arm': 1e6 * min(cpus) / d['arms'], **d})
+    del cs
+    with tempfile.TemporaryDirectory(prefix='noodle_bench_') as tmp:
+        fn = _io_setup(spec, kernel, Path(tmp))
+        disk = sum(f.stat().st_size for f in Path(tmp).iterdir())
+        rss_build = _proc_status_mb('VmRSS')
+        reset = _reset_peak_rss()
+        for i in range(max(warmup, 1)):
+            res = fn()
+            if i == 0 and res and isinstance(res[0], PolylineContainer):
+                d = describe(res)          # an adapter reads only its own part of the input set
+            del res
+        walls, cpus = [], []
+        for _ in range(repeats):
+            t0, c0 = time.perf_counter(), time.process_time()
+            fn()
+            walls.append(time.perf_counter() - t0)
+            cpus.append(time.process_time() - c0)
+        peak = _peak_rss_mb()
+    best = min(walls)
+    return {'input': spec['input'], 'kernel': kernel, 'repeats': repeats, 'warmup': warmup, 'wall_s_best': best,
+            'wall_s_all': walls, 'cpu_s_best': min(cpus), 'rss_after_build_mb': rss_build,
+            'kernel_rss_delta_mb': (peak - rss_build) if reset and rss_build is not None else None,
+            'arms_per_s': d['arms'] / best, 'frames_per_s': d['frames'] / best, 'us_per_arm': 1e6 * best / d['arms'],
+            'cpu_us_per_arm': 1e6 * min(cpus) / d['arms'], 'written_bytes_per_arm': disk / d['arms'], **d}
+
+
+def run_pool(spec: dict, workers: list[int], repeats: int) -> list[dict]:
+    """Wall time of ``compute_many`` (fig5, uncompressed container files, mmap loads) by worker count,
+    and a bit-for-bit comparison of every pooled output with the serial run's."""
+    if not _HAS_ROUND5_IO:
+        return []
+    cs = _build(spec)
+    d = describe(cs)
+    out = []
+    with tempfile.TemporaryDirectory(prefix='noodle_pool_') as tmp:
+        files = [c.save(Path(tmp) / f'seq{i:03d}.npz', compressed=False) for i, c in enumerate(cs)]
+        del cs
+        kw = {'r0': R0, 'load_kw': {'mmap': True}}
+        serial = None
+        for w in workers:
+            walls = []
+            for _ in range(repeats):
+                t0 = time.perf_counter()
+                res = list(NP.compute_many(files, 'fig5', workers=w, mp_context='fork', **kw))
+                walls.append(time.perf_counter() - t0)
+            if serial is None:
+                serial = res
+            same = len(res) == len(serial) and all(
+                n1 == n2 and set(o1) == set(o2) and all(
+                    not isinstance(o1[k], np.ndarray) or (o1[k].dtype == o2[k].dtype and o1[k].tobytes() == o2[k].tobytes())
+                    for k in o1) for (n1, o1), (n2, o2) in zip(res, serial))
+            best = min(walls)
+            out.append({'input': spec['input'], 'kernel': f'POOL compute_many fig5 (workers={w})', 'workers': w,
+                        'repeats': repeats, 'wall_s_best': best, 'wall_s_all': walls, 'identical_to_serial': same,
+                        'arms_per_s': d['arms'] / best, 'us_per_arm': 1e6 * best / d['arms'],
+                        'sequences': len(files), **d})
+            print(f"{spec['input']:<10} {out[-1]['kernel']:<40} {out[-1]['us_per_arm']:10.3f} wall us/arm "
+                  f"{out[-1]['arms_per_s']:12.0f} arms/s  identical to serial: {same}", flush=True)
     return out
 
 
@@ -289,6 +422,8 @@ def projection(results: list[dict]) -> dict:
     synthetic input, else micro; larger inputs win within a kind."""
     best: dict[str, dict] = {}
     for r in results:
+        if r['kernel'].startswith('POOL'):       # wall clock of several processes, not CPU per arm
+            continue
         key = (PROJECTION_PREFERENCE.get(r['input'], 9), -r['arms'])
         if r['kernel'] not in best or key < best[r['kernel']][0]:
             best[r['kernel']] = (key, r)
@@ -322,6 +457,10 @@ def main(argv=None) -> int:
     ap.add_argument('--profile', type=Path, default=None, help='write a cProfile top-25 (fig5 E2E + relink) here')
     ap.add_argument('--json', type=Path, default=None)
     ap.add_argument('--label', default='')
+    ap.add_argument('--io', action='store_true', help='also run every I/O kernel (else only those --kernels names)')
+    ap.add_argument('--pool-workers', default=None, help='e.g. 1,8,32: time compute_many fig5 by worker count')
+    ap.add_argument('--pool-inputs', default='synthetic', help='inputs for the --pool-workers run')
+    ap.add_argument('--pool-repeats', type=int, default=3)
     args = ap.parse_args(argv)
     inputs = args.inputs.split(',')
     if args.synthetic_source is None:
@@ -351,7 +490,11 @@ def main(argv=None) -> int:
     # a fresh process per job: no inherited peak RSS, caches or imports from earlier kernels
     with ProcessPoolExecutor(max_workers=args.jobs, max_tasks_per_child=1) as ex:
         futs = [ex.submit(run_kernel, *j) for j in jobs]
-        io_futs = [ex.submit(run_io, spec, args.repeats) for spec in specs]
+        io_futs = [ex.submit(run_io_kernel, spec, k, (args.synthetic_repeats or args.repeats)
+                             if spec['input'] == 'synthetic' else args.repeats, args.warmup)
+                   for spec in specs for k, (where, _) in IO_KERNELS.items()
+                   if spec['input'] in where and (args.io or not args.kernels
+                                                      or any(x in k for x in args.kernels.split(',')))]
         for f in futs:
             r = f.result()
             results.append(r)
@@ -361,9 +504,16 @@ def main(argv=None) -> int:
                   f"RSS build {r['rss_after_build_mb'] or float('nan'):7.0f} MB  "
                   f"kernel +{kmem if kmem is not None else float('nan'):6.0f} MB", flush=True)
         for f in io_futs:
-            for r in f.result():
-                results.append(r)
-                print(f"{r['input']:<10} {r['kernel']:<40} {r['us_per_arm']:10.2f} us/arm  best {r['wall_s_best']:.3f} s")
+            r = f.result()
+            if r is None:
+                continue
+            results.append(r)
+            print(f"{r['input']:<10} {r['kernel']:<40} {r['us_per_arm']:10.2f} us/arm {r['arms_per_s']:12.0f} arms/s  "
+                  f"best {r['wall_s_best']:.3f} s  kernel +{r['kernel_rss_delta_mb'] or float('nan'):6.0f} MB", flush=True)
+    if args.pool_workers:
+        for spec in specs:
+            if spec['input'] in args.pool_inputs.split(','):
+                results += run_pool(spec, [int(w) for w in args.pool_workers.split(',')], args.pool_repeats)
     proj = projection(results)
     print('\nCamera-year projection (3e8 arms, single core):')
     for k, v in proj.items():
