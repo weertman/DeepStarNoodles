@@ -2,7 +2,9 @@
 
 Every round must meet two conditions:
 
-- `parity_check.py` passes, unchanged, against the parity reference store;
+- `parity_check.py` passes against the parity reference store, with its checks, pass/fail rules and
+  tolerances (`RESAMPLE_ATOL = 1e-5`, `RTOL = 1e-9`) unchanged. A round may add an
+  information-only report; round 3 added the near-tie audit;
 - `tests/test_noodle_polylines*.py` passes.
 
 Each round also reports `bench.py` timings against the v0 baseline. Timings are single
@@ -682,11 +684,12 @@ sequences can step in lock-step with padded blocks, because their trackers do no
 - **Near-tie audit (new, information only):** 39,953 LSA calls, **0 with a decision margin below
   1e-6**; the smallest margin is 7.6e-4 cost units. No assignment in the gate is within reach of a
   last-bit change.
-- New `tests/test_noodle_polylines_assoc.py` (22 tests) checks the batched code against the
+- New `tests/test_noodle_polylines_assoc.py` (23 tests, including the review fix below) checks the batched code against the
   per-pair and per-frame code it replaced, bit for bit. Those loops are kept in the test as oracles
   and call the reference tracker, `common_span_dist`, `frame_measures` and `links`. The cases cover:
   - the shape block for k = 12, 5 and 2, with equal lengths, zero lengths and lengths just below and
     above 1e-6, and the embedding block in float32 and float64;
+  - `cost_matrix` with NaN, +inf and -inf lengths and NaN points on either side;
   - `cost_matrix`, the augmented matrix, and every variant's re-link in both directions, comparing
     each LSA matrix and solution;
   - a 300-arm frame (more than 256 rows), strided and sparse frame sets, and block sizes of 1, 37
@@ -697,6 +700,32 @@ sequences can step in lock-step with padded blocks, because their trackers do no
   - the T4.5 counters with states that include None, time and frame indices, gaps and empty frames;
   - `assignment_margin` on constructed ties, near ties and gated cases;
   - the stored-ID path, which never touches the tracker.
-- `pytest tests/test_noodle_polylines*.py`: **108 passed** (86 + 22). `_reference.py`, the
+- `pytest tests/test_noodle_polylines*.py`: **109 passed** (86 + 23). `_reference.py`, the
   fixtures and the tolerances are unchanged. `parity_check.py` only gained the audit. The micro
   example runs.
+
+### Fix after review (round 3)
+
+An independent check found a regression in the public `tracking.cost_matrix` (T4.2) on non-finite
+lengths. Round 2 looped over `common_span_dist` pair by pair, which returns NaN for a NaN or inf
+length. The first round-3 version raised `IndexError` instead, for two reasons:
+
+- `_assoc._index` applied only the upper clip. Its docstring assumed `idx >= 0`, but a NaN or inf
+  length makes `idx` NaN, whose int64 cast is INT64_MIN. The reference's `clip(..., 0, k - 2)` maps
+  that to 0, and `t` is then NaN. The fast code passed the value to `take` as a large negative
+  index. Both clips are now applied, as two in-place ufuncs (`np.clip` costs more per call).
+- The shorter arm was picked as `la <= lb`. For a NaN length that differs from the reference's
+  `min(la, lb)`, which keeps `la` unless `lb < la`. With `la = NaN` and `lb = 0` the reference
+  computes NaN, but the old test chose the degenerate tip-distance branch. The test is now
+  `lb < la`, with the `np.where` arguments swapped, so it adds no operation.
+
+`relink`, `diagnostics` and the fast branch of `step_costs` were not affected, because
+`fast_path_ok` sends non-finite inputs to the reference tracker. The fallback branch of
+`step_costs` (a frame with a NaN body origin) calls `cost_matrix`. It raised `IndexError` and now
+raises the reference's `ValueError` from `linear_sum_assignment` again, as round 2 did. A new
+test compares `cost_matrix` with the per-pair reference for NaN, +inf and -inf lengths and NaN
+points on both sides; it fails on the first round-3 version. After the fix: `parity_check.py`
+4,213 checks, 0 failed, 4,213 bit-identical, near-tie audit unchanged (39,953 calls, smallest
+margin 7.6e-4); 109 tests pass. A re-link of the micro example takes 19.0–20.0 µs/arm after the
+fix and 18.7–19.2 µs/arm before it (best of 15, three alternating runs). That is within run-to-run
+noise, so the round-3 timings above stand.

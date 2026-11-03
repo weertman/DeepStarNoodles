@@ -72,12 +72,14 @@ def _arange(n: int) -> np.ndarray:
 def _index(grid: np.ndarray, lmax: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``idx = s / max(total, 1e-6) * (k - 1)``; ``i0 = clip(int(idx), 0, k - 2)``; ``t = idx - i0``.
 
-    Returns ``(i0, 1 - t, t)``. ``idx >= 0`` (grids and lengths are non-negative), so only the upper
-    clip can bind."""
+    Returns ``(i0, 1 - t, t)``. Both clips are kept: a NaN or inf length makes ``idx`` NaN, whose
+    int64 cast is INT64_MIN; the reference clips that to 0 (``t`` is then NaN, so the distance is
+    NaN rather than an out-of-bounds gather)."""
     idx = grid / lmax[..., None]
     idx *= k - 1
     i0 = idx.astype(np.int64)
     np.minimum(i0, k - 2, out=i0)
+    np.maximum(i0, 0, out=i0)                  # ufuncs: np.clip has more per-call overhead
     t = idx - i0
     return i0, 1 - t, t
 
@@ -134,12 +136,12 @@ def span_dist_rows(Ra: np.ndarray, Rb: np.ndarray, k: int, deg_fn=None) -> np.nd
         return np.zeros((n, m))
     U = np.concatenate((Ra, Rb))
     Lc = U[:, lay.L]
-    a_short = Lc[:n, None] <= Lc[None, n:]                      # min(la, lb) is la unless lb < la
+    b_short = Lc[None, n:] < Lc[:n, None]                       # min(la, lb) is la unless lb < la (NaN too)
     ar = _arange(n + m)
     ia = ar[:n, None]
     jb = ar[None, n:]
-    short = np.where(a_short, ia, jb)
-    long_ = np.where(a_short, jb, ia)
+    short = np.where(b_short, jb, ia)
+    long_ = np.where(b_short, ia, jb)
     Rs = U[short]                                                 # (n, m, W) rows of the shorter arm
     # the longer arm sampled on the shorter arm's grid; x and y points gathered by flat index as one
     # (2, n, m, k) block (the x and y planes are k columns apart)

@@ -136,6 +136,25 @@ def test_cost_matrix_equals_pairwise_loop():
     assert empty['cost'].shape == (3, 0)
 
 
+@pytest.mark.filterwarnings('ignore::RuntimeWarning')
+def test_cost_matrix_nonfinite_lengths_and_points():
+    """NaN / +-inf lengths and NaN points on either side: the reference's values (NaN where it is
+    NaN), not an out-of-bounds gather; a NaN length is the shorter arm as in ``min(la, lb)``."""
+    rng = np.random.default_rng(4)
+    vals = [np.nan, np.inf, -np.inf, 0.0, 5e-7, 30.0, 60.0]
+    S, _ = _shapes(rng, 2 * len(vals))
+    L = np.array(vals + vals, np.float32)
+    S[2] = np.nan
+    S[len(vals) + 5, 3] = np.nan
+    E = rng.normal(0, 1, (len(S), 8)).astype(np.float32)
+    n = len(vals)
+    got = TR.cost_matrix(S[:n], L[:n], E[:n], S[n:], L[n:], E[n:])['shape_distance']
+    want = np.array([[R.common_span_dist(S[i], float(L[i]), S[n + j], float(L[n + j])) for j in range(n)]
+                     for i in range(n)])
+    bits(got, want)
+    assert np.isnan(want).any() and np.isfinite(want).any()
+
+
 def test_augmented_matrix():
     rng = np.random.default_rng(3)
     for n, m in ((1, 1), (3, 7), (9, 2)):
