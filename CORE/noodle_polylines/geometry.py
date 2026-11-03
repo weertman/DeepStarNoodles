@@ -265,14 +265,15 @@ _GEOM_DEPS = ('points', 'arm_point_offsets')
 
 
 def base_shapes(c, k: int = K) -> np.ndarray:
-    """:func:`resample_base` of a container, computed once and shared (T1.6 shapes, T3.1 deformation).
+    """:func:`resample_base` of a container (T1.6 shapes, T3.1 deformation).
 
-    Read-only; cached on the container (:meth:`PolylineContainer.derived`)."""
+    Shared and read-only inside a :meth:`PolylineContainer.caching` scope, else a fresh array."""
     return c.derived(('resample_base', k), _GEOM_DEPS, lambda: resample_base(c.points, c.arm_point_offsets, k))
 
 
 def arm_metrics(c, two_point: str = 'zero') -> tuple[np.ndarray, np.ndarray]:
-    """:func:`arc_length_curvature` of a container (read-only, cached; shared by the T2 aggregates)."""
+    """:func:`arc_length_curvature` of a container (shared and read-only inside a
+    :meth:`PolylineContainer.caching` scope; used by the T2 aggregates)."""
     if two_point not in ('zero', 'nan'):
         raise ValueError("two_point must be 'zero' or 'nan'")
     return c.derived(('arc_length_curvature', two_point), _GEOM_DEPS,

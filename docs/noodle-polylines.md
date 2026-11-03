@@ -216,11 +216,22 @@ work splits by file; the tracker is sequential within a sequence.
 
 The per-arm kernels (`resample_base`, `resample_tip`, `arc_length_curvature`) work on the whole
 CSR array at once, in blocks of 8,192 arms, and give bit-identical results to the per-arm script code.
-A container caches the derived arrays that several representations share:
-`geometry.base_shapes(c)` (T0.2 base, used by T1.6/T3.1), `geometry.arm_metrics(c, two_point)`
-(T0.3/T1.1, used by T2) and `tracking.tracker_inputs(c)` (T0.2 tip, used by every tracker pass).
-Cached arrays are read-only. The cache is dropped when a field is rebound (as `with_fields` does)
-and is never pickled. After an in-place edit of a field's array, call `c.clear_cache()`.
+No call keeps derived arrays on a container, so memory is bounded by the call (`compute_all` shares
+its resamples internally and frees them on return). To share them across several calls, open a
+caching scope:
+
+```python
+with c.caching():
+    ids = tracking.relink(c)                 # one tip resample ...
+    res = tracking.step_costs(c, frame)      # ... reused here
+```
+
+Inside the scope `geometry.base_shapes(c)` (T0.2 base, T1.6/T3.1), `geometry.arm_metrics(c, two_point)`
+(T0.3/T1.1, T2) and `tracking.tracker_inputs(c)` (T0.2 tip, every tracker pass) are computed once
+and returned read-only. Per arm, the cache holds 192 B of base shapes (float64), 16 B of arc length
+and curvature and 100 B of tip resamples and lengths (float32). It is dropped when the outermost scope
+exits or a field is rebound (as `with_fields` does), and is never pickled. After an in-place edit of
+a field's array inside a scope, call `c.clear_cache()`.
 
 ## Running
 

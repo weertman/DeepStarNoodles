@@ -20,6 +20,7 @@ string, so every file loads with ``allow_pickle=False``.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, replace
 import json
 from pathlib import Path
@@ -126,14 +127,38 @@ class PolylineContainer:
         return self.track_id is not None and self.n_arms > 0 and bool(np.all(self.track_id >= 0))
 
     # ------------------------------------------------------------------ derived-array cache
-    def derived(self, key, deps: tuple[str, ...], compute):
-        """Memoised per-container derived array(s), e.g. the resampled shapes shared by T3 and T4.
+    @contextmanager
+    def caching(self):
+        """Scope in which derived arrays shared across calls are kept, e.g. one tip resample serving
+        :func:`~noodle_polylines.tracking.relink`, ``step_costs`` and the diagnostics::
 
-        ``compute()`` runs once per ``key``; the value is reused while every field named in ``deps`` is
-        still the same object (rebinding a field, as :meth:`with_fields` does on a new container,
-        invalidates it). Cached arrays are made read-only. After modifying a field's array **in place**,
-        call :meth:`clear_cache`.
+            with c.caching():
+                ids = tracking.relink(c)
+                res = tracking.step_costs(c, frame)
+
+        Outside a scope nothing is kept (memory stays bounded by the call). Inside one, the cached
+        helpers return shared read-only arrays; the cache is dropped when the outermost scope exits.
         """
+        d = self.__dict__
+        d['_cache_depth'] = d.get('_cache_depth', 0) + 1
+        try:
+            yield self
+        finally:
+            d['_cache_depth'] -= 1
+            if d['_cache_depth'] <= 0:
+                d.pop('_cache_depth', None)
+                d.pop('_derived_cache', None)
+
+    def derived(self, key, deps: tuple[str, ...], compute):
+        """``compute()``, memoised per ``key`` while a :meth:`caching` scope is open.
+
+        Outside a scope this just returns ``compute()`` (fresh, writable arrays). Inside one the value
+        is computed once, made read-only and reused while every field named in ``deps`` is still the
+        same object (rebinding a field, as :meth:`with_fields` does on a new container, invalidates
+        it). After modifying a field's array **in place** inside a scope, call :meth:`clear_cache`.
+        """
+        if not self.__dict__.get('_cache_depth'):
+            return compute()
         cache = self.__dict__.setdefault('_derived_cache', {})
         refs = tuple(getattr(self, d) for d in deps)
         hit = cache.get(key)
@@ -147,12 +172,13 @@ class PolylineContainer:
         return value
 
     def clear_cache(self) -> None:
-        """Drop every cached derived array (see :meth:`derived`)."""
+        """Drop every cached derived array (see :meth:`derived`); an open scope stays open."""
         self.__dict__.pop('_derived_cache', None)
 
     def __getstate__(self):
         state = dict(self.__dict__)
-        state.pop('_derived_cache', None)      # never pickle the cache (process pools)
+        state.pop('_derived_cache', None)      # never pickle the cache or scope (process pools)
+        state.pop('_cache_depth', None)
         return state
 
     # ------------------------------------------------------------------ validation

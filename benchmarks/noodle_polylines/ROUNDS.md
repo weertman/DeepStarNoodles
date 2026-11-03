@@ -172,16 +172,18 @@ change the last bits. The new `_csr` module reproduces numpy's order for every a
 - **Blocks of 8,192 arms.** The kernels run over blocks of arms. A sweep over 1k–64k arms per block
   found 4k–8k fastest, because temporaries stay in cache, and 8k keeps the kernel's own peak at tens
   of MB.
-- **Per-container cache.** `PolylineContainer.derived` memoises derived arrays and drops them when a
-  dependency field is rebound. The cache is never pickled and its arrays are read-only. Three
-  cached helpers are built on it:
+- **Opt-in per-container cache.** `PolylineContainer.derived` memoises derived arrays, but only
+  inside a `with c.caching():` scope; outside one it computes and returns fresh arrays and keeps
+  nothing. In a scope the arrays are read-only, are dropped when a dependency field is rebound or the
+  outermost scope exits, and are never pickled. Three helpers are built on it:
   - `geometry.base_shapes(c)`, the T0.2 base resample, for T1.6/T3.1;
   - `geometry.arm_metrics(c, two_point)`, T0.3/T1.1 for the T2 aggregates;
   - `tracking.tracker_inputs(c)`, the T0.2 tip resample, for every tracker pass, step cost and
     diagnostic.
 
-  `compute_all` computes each of them once per container. `bench.py` now clears the cache before
-  every timed call, so each timing below is cold.
+  `compute_all` opens no scope. It shares its arc length, curvature and base shapes through local
+  variables, as before, so they are freed when it returns. The first version of this commit kept
+  them on the container instead; see "Review repair" below.
 
 Not changed (later rounds): the tracker's per-pair cost (T4.1/T4.2), the per-frame reduction loops
 (T2.2–T2.6) and the Kabsch / dict joins of T3.
@@ -212,16 +214,22 @@ OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,sub
 - **Inputs.** The synthetic input is the subset tiled to 1,000,416 arms. The 10-pass T4.5 diagnostics
   were not re-timed. Only their one-off tracker-input resample changed, so they stay at about 4,100
   µs/arm.
-- **Memory.** The before column of kernel peak RSS reads 0 MB for the per-arm loops. Their small
-  allocations reused heap freed after the input build. The after values include the output arrays
-  (for example 96 MB of tip resamples on 1e6 arms) and the cached shapes.
+- **Memory.** The before column of kernel peak RSS often reads 0 MB for the per-arm loops. Their
+  many small allocations reused heap freed after the input build. A batched kernel allocates its
+  output as one fresh array (for example 96 MB of tip resamples on 1e6 arms), so part of the
+  after-minus-before difference is the output itself, not extra working memory. The memory column
+  below is from the repaired code (see "Review repair").
+- **Timings are from a contended run.** Both commands ran at once (18 jobs on 64 cores). A review
+  rerun with the same settings measured the synthetic geometry kernels 20–25% slower than the table
+  (resample_base 1.97, resample_tip 3.25, arc_length_curvature 1.47 µs/arm); a clean `--jobs 1`
+  rerun was back within ±15% of it. Treat single values as ±25%.
 
 ### Per kernel (before → after)
 
 | Kernel | Micro µs/arm | Subset µs/arm | Synthetic µs/arm | Speed-up, subset / synthetic (CPU) | Kernel peak RSS MB above build | CPU-h per camera-year |
 |---|---:|---:|---:|---:|---:|---:|
-| T0.2 resample_base | 30.38 → 2.52 | 30.65 → 1.86 | 30.06 → 1.57 | 16.4× / 19.1× | 0 → 3 (synth.) | 2.6 → 0.16 |
-| T0.2 resample_tip (body-relative, tracker input) | 71.45 → 3.36 | 70.40 → 2.84 | 69.86 → 2.66 | 24.8× / 26.3× | 0 → 99 (synth.) | 5.9 → 0.24 |
+| T0.2 resample_base | 30.38 → 2.52 | 30.65 → 1.86 | 30.06 → 1.57 | 16.4× / 19.1× | 0 → 0 (synth.)† | 2.6 → 0.16 |
+| T0.2 resample_tip (body-relative, tracker input) | 71.45 → 3.36 | 70.40 → 2.84 | 69.86 → 2.66 | 24.8× / 26.3× | 0 → 9 (synth.)†; 0 → 28 (subset)† | 5.9 → 0.24 |
 | T0.3 + T1.1 arc_length_curvature | 30.51 → 1.75 | 30.41 → 1.53 | 30.57 → 1.22 | 19.9× / 25.1× | 0 → 0 (synth.) | 2.5 → 0.13 |
 | T0.4 to_source | 1.12 → 0.46 | 0.86 → 0.33 | 0.73 → 0.37 | 2.6× / 2.0× | 106 → 67 (synth.) | 0.1 → 0.03 |
 | T1.3 tip_polar | 0.07 → 0.07 | 0.09 → 0.09 | 0.08 → 0.08 | 1.0× / 1.0× | 0 → 0 (synth.) | 0.0 → 0.01 |
@@ -230,12 +238,15 @@ OMP_NUM_THREADS=1 python benchmarks/noodle_polylines/bench.py --inputs micro,sub
 | T2.4 arm_curvature (fig5, includes T1.1) | 30.74 → 5.22 | 30.16 → 4.32 | 30.19 → 3.81 | 7.0× / 7.9× | 0 → 0 (synth.) | 2.5 → 0.36 |
 | T2.6 tip_isotropy | 6.89 → 6.92 | 5.74 → 5.74 | 5.55 → 5.60 | 1.0× / 1.0× | 0 → 0 (synth.) | 0.5 → 0.48 |
 | T0.7 R0 policies | 0.07 → 0.07 | 0.02 → 0.02 | 0.01 → 0.01 | 1.0× / 0.9× | 0 → 0 (synth.) | 0.0 → 0.00 |
-| T3.1 arm_deformation, lag B (includes T0.2 base) | 78.33 → 50.61 | 78.40 → 46.84 | 75.59 → 47.44 | 1.7× / 1.6× | 45 → 185 (synth.) | 6.5 → 3.90 |
-| T3.1 arm_deformation, lag A (includes T0.2 base) | 77.64 → 49.98 | 76.10 → 46.81 | 75.18 → 45.69 | 1.6× / 1.6× | 31 → 186 (synth.) | 6.3 → 3.90 |
+| T3.1 arm_deformation, lag B (includes T0.2 base) | 78.33 → 50.61 | 78.40 → 46.84 | 75.59 → 47.44 | 1.7× / 1.6× | 33 → 33 (synth.)† | 6.5 → 3.90 |
+| T3.1 arm_deformation, lag A (includes T0.2 base) | 77.64 → 49.98 | 76.10 → 46.81 | 75.18 → 45.69 | 1.6× / 1.6× | 32 → 35 (synth.)† | 6.3 → 3.90 |
 | T3.2 tip_motion | 7.85 → 7.17 | 6.45 → 6.40 | 6.36 → 6.41 | 1.0× / 1.0× | 0 → 0 (synth.) | 0.5 → 0.53 |
-| **E2E compute_all fig5 (stored IDs)** | 136.90 → 78.37 | 584.00 → 480.10 | 124.62 → 69.56 | 1.2× / 1.8× | 46 → 194 (synth.) | 48.7 → 40.00 |
-| **T4.4 relink (1 pass)** | 501.43 → 437.38 | 659.22 → 586.63 | — | 1.1× / — | 1 → 39 (subset) | 54.9 → 48.87 |
-| **E2E compute_all fig5 + relink** | 638.87 → 516.79 | 795.97 → 656.33 | — | 1.2× / — | 7 → 71 (subset) | 66.3 → 54.69 |
+| **E2E compute_all fig5 (stored IDs)** | 136.90 → 78.37 | 584.00 → 480.10 | 124.62 → 69.56 | 1.2× / 1.8× | 35 → 33 (synth.)† | 48.7 → 40.00 |
+| **T4.4 relink (1 pass)** | 501.43 → 437.38 | 659.22 → 586.63 | — | 1.1× / — | 1 → 28 (subset)† | 54.9 → 48.87 |
+| **E2E compute_all fig5 + relink** | 638.87 → 516.79 | 795.97 → 656.33 | — | 1.2× / — | 6 → 29 (subset)† | 66.3 → 54.69 |
+
+† Memory from the review-repair run (518f47e vs the repaired code, same settings; see "Review
+repair"). The other rows were not re-measured.
 
 The subset's "stored IDs" end-to-end row re-links its 36 Sleepy segments, which have no stored IDs,
 so the tracker dominates it. The synthetic row has stored IDs throughout: 124.6 → 69.6 µs/arm.
@@ -270,6 +281,52 @@ geometry kernels no longer appear in the top 25.
 - The gate's T0.2, T0.3 and T1.1 outputs are bit-identical on the micro example and the 7 flipping
   clips (67,694 arms). `tests/test_noodle_polylines_kernels.py` adds bit-exact checks on cases the released data rarely
   hits: 1- and 2-point arms, repeated points, zero-length arms, angle wraps, arms over 128 points,
-  f32 and f64 origins, and any block size. It also tests the cache: sharing, invalidation,
-  read-only arrays and pickling.
-- `pytest tests/test_noodle_polylines*.py`: 69 passed.
+  f32 and f64 origins, and any block size. It also tests the cache: nothing kept outside a scope,
+  sharing and nesting inside one, invalidation, read-only arrays, pickling, and that `compute_all`
+  leaves nothing on the container.
+- `pytest tests/test_noodle_polylines*.py`: 70 passed.
+
+### Review repair
+
+**Problem.** The first version of this commit cached derived arrays on the container with no scope.
+`compute_all`, `arm_deformation`, the T2 aggregates and `tracker_inputs` all left their resamples on
+the container after returning: 192 B per arm of float64 base shapes, 16 B of arc length and
+curvature, and 100 B of tip resamples and lengths. That is about as much as the input points
+(223 B per arm). A reviewer measured whole-process peak RSS against 518f47e and found it 25–40%
+higher. For example, `compute_all` fig5 with stored IDs on the 1e6-arm synthetic input went from
+447 to 627 MB. At 3e8 arms in one container, the retained arrays would come to about 62 GB. The
+commit message gave the larger kernel deltas (194, 185 and 99 MB) but did not call them a
+regression.
+
+**Fix.** The cache is now opt-in (`with c.caching():`), and `compute_all` shares its arrays through
+local variables. Outputs are bit-identical. `compute_all` no longer copies its arc length and
+curvature, so its returned arrays are writable again, as at 518f47e.
+
+**Memory after the fix.** The table gives whole-process peak RSS in MB (build plus kernel; best of 2,
+`--jobs` 3 + 2 per version, `OMP_NUM_THREADS=1`):
+
+| Kernel | Input | 518f47e | First version | Repaired | Repaired / 518f47e |
+|---|---|---:|---:|---:|---:|
+| E2E compute_all fig5, stored IDs | synthetic | 447 | 625 | 446 | 1.00 |
+| E2E compute_all fig5, stored IDs | subset | 163 | 218 | 176 | 1.08 |
+| E2E compute_all fig5 + relink | subset | 158 | 226 | 184 | 1.16 |
+| T3.1 arm_deformation, lag B | synthetic | 447 | 607 | 448 | 1.00 |
+| T3.1 arm_deformation, lag A | synthetic | 442 | 608 | 451 | 1.02 |
+| T3.1 arm_deformation, lag B | subset | 160 | 198 | 170 | 1.06 |
+| T4.4 relink | subset | 156 | 197 | 182 | 1.17 |
+| T0.2 resample_tip | synthetic | 412 | 522 | 430 | 1.04 |
+| T0.2 resample_tip | subset | 155 | 191 | 187 | 1.21 |
+| T0.2 resample_base | synthetic | 413 | 422 | 414 | 1.00 |
+
+The remaining increases on the subset (+13 to +32 MB) come mostly from output arrays. At 518f47e the
+tip resample was a list of about 173k small arrays that reused heap freed after the input build, so
+it read as +0 MB. Now it is one fresh 17 MB array. The relink and tip-resample rows hold that array,
+plus the 3 MB per-arm origin and the 8,192-arm block temporaries. None of this outlives the call.
+
+**Timing check.** A clean `--jobs 1` rerun of the repaired code (best of 5, single-threaded) gave
+these synthetic values in µs per arm: resample_base 1.47, resample_tip 1.95, arc_length_curvature
+1.10, arm_deformation 47.3 (lag B) and 47.3 (lag A), and `compute_all` fig5 with stored IDs 70.6.
+The subset values were 1.72, 2.59, 1.41, 47.3, 47.0 and 479.4. All are within 15% of the table
+above, or faster. The parity gate gave the same result as before: 4,213 checks, 0 failed, 4,213
+bit-identical.
+

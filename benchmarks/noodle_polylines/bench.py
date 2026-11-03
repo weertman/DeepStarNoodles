@@ -16,10 +16,11 @@ Inputs (any combination):
 
 Each (input, kernel) job runs in a fresh single-threaded process (``max_tasks_per_child=1``; BLAS threads
 pinned to 1): ``--warmup`` untimed calls, then the best of ``--repeats`` timed runs (``--synthetic-repeats``
-for the synthetic input). The container's derived-array cache is cleared before every call, so each
-timing is cold (a kernel never reuses resamples from an earlier repeat). ``--jobs`` > 1 runs jobs concurrently, which inflates timings through
-contention; use ``--jobs 1`` for numbers you report. Memory: RSS after building the input, and the
-kernel's own peak (VmHWM reset after the build via /proc/self/clear_refs on Linux).
+for the synthetic input). Kernels run outside a caching scope, so no call reuses resamples from an
+earlier repeat (the cache is also cleared before every call, in case a scope is left open). ``--jobs``
+> 1 runs jobs concurrently, which inflates timings through contention; use ``--jobs 1`` for numbers you
+report. Memory: RSS after building the input, and the kernel's own peak (VmHWM reset after the build
+via /proc/self/clear_refs on Linux).
 Metrics: arms/s and frames/s of the input set; the projection multiplies the per-arm CPU time by
 3e8 arms (one camera-year at ~1 fps) and reports CPU-hours, preferring the real subset over synthetic.
 """

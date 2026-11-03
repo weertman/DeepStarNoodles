@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'CORE'))
 
 from noodle_polylines import _csr, _reference as R, geometry as G, tracking as TR  # noqa: E402
 from noodle_polylines.container import _offsets, from_polylines  # noqa: E402
+from noodle_polylines.presets import compute_all  # noqa: E402
 
 
 def _arms(seed: int = 7, n_arms: int = 600) -> list[np.ndarray]:
@@ -150,18 +151,38 @@ def test_container_cache_shared_and_invalidated():
                for _ in range(5)] for _ in range(20)]
     c = from_polylines(frames, body_origin_model=np.full((20, 2), 256.0),
                        identity=rng.normal(0, 1, (100, 8)).astype(np.float32))
-    b1 = G.base_shapes(c)
-    assert b1 is G.base_shapes(c) and not b1.flags.writeable
-    assert np.array_equal(b1, G.resample_base(c.points, c.arm_point_offsets))
-    s1, l1, e1 = TR.tracker_inputs(c)
-    s2, l2, e2 = TR.tracker_inputs(c)
-    assert s1 is s2 and l1 is l2 and e1 is c.identity and c.identity.flags.writeable
-    assert TR.tracker_inputs(c, origin_dtype='float32')[0] is not s1        # keyed by origin dtype
-    moved = c.with_fields(body_origin_model=c.body_origin_model + 1.0)
-    assert TR.tracker_inputs(moved)[0] is not s1
-    assert G.base_shapes(moved) is not b1                                   # new container, new cache
-    c.clear_cache()
-    assert G.base_shapes(c) is not b1
-    clone = pickle.loads(pickle.dumps(c))
-    assert '_derived_cache' not in clone.__dict__
-    assert np.array_equal(G.base_shapes(clone), b1)
+    # outside a caching scope nothing is kept: fresh, writable arrays every call
+    f1 = G.base_shapes(c)
+    assert f1 is not G.base_shapes(c) and f1.flags.writeable and '_derived_cache' not in c.__dict__
+    assert TR.tracker_inputs(c)[0] is not TR.tracker_inputs(c)[0]
+    with c.caching():
+        b1 = G.base_shapes(c)
+        assert b1 is G.base_shapes(c) and not b1.flags.writeable
+        assert np.array_equal(b1, G.resample_base(c.points, c.arm_point_offsets))
+        assert np.array_equal(b1, f1)
+        s1, l1, e1 = TR.tracker_inputs(c)
+        with c.caching():                                                   # nested scopes share
+            s2, l2, e2 = TR.tracker_inputs(c)
+        assert s1 is s2 and l1 is l2 and e1 is c.identity and c.identity.flags.writeable
+        assert TR.tracker_inputs(c)[0] is s1                                # inner exit keeps the cache
+        assert TR.tracker_inputs(c, origin_dtype='float32')[0] is not s1    # keyed by origin dtype
+        moved = c.with_fields(body_origin_model=c.body_origin_model + 1.0)
+        assert TR.tracker_inputs(moved)[0] is not s1                        # no scope on the new container
+        c.clear_cache()
+        assert G.base_shapes(c) is not b1
+        clone = pickle.loads(pickle.dumps(c))
+        assert '_derived_cache' not in clone.__dict__ and '_cache_depth' not in clone.__dict__
+        assert np.array_equal(G.base_shapes(clone), b1)
+    assert '_derived_cache' not in c.__dict__ and '_cache_depth' not in c.__dict__   # dropped on exit
+
+
+def test_compute_all_keeps_nothing_on_the_container():
+    rng = np.random.default_rng(7)
+    frames = [[256 + np.cumsum(rng.normal(0, 3, (int(rng.integers(3, 30)), 2)), axis=0).astype(np.float32)
+               for _ in range(5)] for _ in range(40)]
+    c = from_polylines(frames, body_origin_model=np.full((40, 2), 256.0),
+                       identity=rng.normal(0, 1, (200, 8)).astype(np.float32),
+                       crop=np.tile([0.0, 0.0, 512.0], (40, 1)))
+    out = compute_all(c, 'fig5', shapes=True, track='relink')
+    assert '_derived_cache' not in c.__dict__
+    assert out['arc_length'].flags.writeable and out['resample_base'].flags.writeable
