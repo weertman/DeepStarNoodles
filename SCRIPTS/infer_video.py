@@ -32,6 +32,7 @@ from deepstarnoodles.paths import (
 )
 from deepstarnoodles.noodle_tracer import (
     load_noodle_tracer_checkpoint,
+    resolve_invalid_seed_threshold,
     trace_arms_noodle_batch,
 )
 from deepstarnoodles.runtime import (
@@ -54,6 +55,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--starseg", type=Path, default=DEFAULT_STARSEG)
     parser.add_argument("--hydra", type=Path, default=DEFAULT_HYDRA_CHECKPOINT)
     parser.add_argument("--tracer", type=Path, default=DEFAULT_TRACER_CHECKPOINT)
+    parser.add_argument(
+        "--invalid-seed-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Drop a tracing start whose invalid-seed probability is at least this. "
+            "Default: the checkpoint's value, else 0.6 (the released tracer)."
+        ),
+    )
     parser.add_argument(
         "--multi-star",
         action="store_true",
@@ -118,6 +128,9 @@ def main() -> int:
     hydra = HydraPredictor(args.hydra, HydraInferConfig(device=device))
     tracer, tracer_params, _meta, _train = load_noodle_tracer_checkpoint(
         str(args.tracer), device=device
+    )
+    tracer_params = resolve_invalid_seed_threshold(
+        tracer_params, args.invalid_seed_threshold
     )
     tracker = (
         None
@@ -202,21 +215,24 @@ def main() -> int:
                         model_size=hydra.image_size,
                     )
                     star_records.append(tracked_star_record(crop, arm_records))
-                    overlay_stars.append((crop, arm_records))
-                    support_masks.append(activated[0])
+                    if args.overlay is not None:
+                        overlay_stars.append((crop, arm_records))
+                        if args.overlay_support:
+                            support_masks.append(activated[0])
                 star_trackers.prune(frame_index)
                 record = {
                     "frame": frame_index,
                     "detected": bool(crops),
                     "stars": star_records,
                 }
-                overlay = draw_multi_overlay(
-                    frame_bgr,
-                    overlay_stars,
-                    support_masks=support_masks if args.overlay_support else None,
-                    support_threshold=args.support_threshold,
-                    support_alpha=args.support_alpha,
-                )
+                if args.overlay is not None:
+                    overlay = draw_multi_overlay(
+                        frame_bgr,
+                        overlay_stars,
+                        support_masks=support_masks if args.overlay_support else None,
+                        support_threshold=args.support_threshold,
+                        support_alpha=args.support_alpha,
+                    )
             else:
                 crop = crops[0] if crops else None
                 record = {
@@ -242,7 +258,8 @@ def main() -> int:
                         crop,
                         model_size=hydra.image_size,
                     )
-                overlay = draw_overlay(frame_bgr, crop, record["arms"])
+                if args.overlay is not None:
+                    overlay = draw_overlay(frame_bgr, crop, record["arms"])
             if args.overlay is not None:
                 if writer is None:
                     height, width = overlay.shape[:2]

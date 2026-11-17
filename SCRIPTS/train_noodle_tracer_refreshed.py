@@ -213,6 +213,13 @@ def main(argv: list[str] | None = None) -> int:
     args.checkpoint = args.checkpoint.expanduser().resolve()
     args.split_dir = args.split_dir.expanduser().resolve()
     args.normalization_json = args.normalization_json.expanduser().resolve()
+    # Catch the released normalizer being used accidentally with a new parent
+    # before building generations. Refined-field evaluation is a separate path.
+    from train_noodle_tracer import validate_normalization_source
+    validate_normalization_source(
+        json.loads(args.normalization_json.read_text(encoding="utf-8")),
+        sha256_file(args.checkpoint),
+    )
     if args.init_checkpoint is not None:
         args.init_checkpoint = args.init_checkpoint.expanduser().resolve()
     (args.output / "logs").mkdir(parents=True, exist_ok=True)

@@ -21,8 +21,7 @@ Released video deploy uses this tracker with temporal lifecycle modes off
    track is handed to a neighbouring arm (an identity switch). On 24 h of
    Sleepy Stars and flipping recordings the option cut abrupt tip jumps (> 30
    degrees about the body in one frame) from 5.3 to 1.9 per 1,000 links at 1 Hz,
-   at the price of more, shorter IDs (2.5 -> 3.6 IDs per arm per 10 min); see
-   ``paper/deepstarnoodles_methods/figures/tracker_study_06.py``. Pass
+   at the price of more, shorter IDs (2.5 -> 3.6 IDs per arm per 10 min). Pass
    ``max_match_cost=None`` for the previous behaviour.
 4. **Embedding EMA drift.** The identity embedding is a weighted tiebreaker,
    not the primary gate, and a track's embedding is only updated when the

@@ -38,6 +38,7 @@ from deepstarnoodles.paths import (
 )
 from deepstarnoodles.noodle_tracer import (
     load_noodle_tracer_checkpoint,
+    resolve_invalid_seed_threshold,
     trace_arms_noodle,
 )
 
@@ -50,6 +51,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--index", type=Path, default=DEFAULT_TEST_INDEX)
     parser.add_argument("--hydra", type=Path, default=DEFAULT_HYDRA_CHECKPOINT)
     parser.add_argument("--tracer", type=Path, default=DEFAULT_TRACER_CHECKPOINT)
+    parser.add_argument(
+        "--invalid-seed-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Drop a tracing start whose invalid-seed probability is at least this. "
+            "Default: the checkpoint's value, else 0.6 (the released tracer)."
+        ),
+    )
     parser.add_argument("--starseg", type=Path, default=DEFAULT_STARSEG)
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--images", type=int, default=16)
@@ -220,6 +230,9 @@ def main() -> int:
     tracer, trace_params, tracer_metadata, _training = load_noodle_tracer_checkpoint(
         str(args.tracer),
         device=args.device,
+    )
+    trace_params = resolve_invalid_seed_threshold(
+        trace_params, args.invalid_seed_threshold
     )
     tracker = FusedTracker(shape_gate=120.0, embed_weight=2.0, max_age=16)
     starseg = None

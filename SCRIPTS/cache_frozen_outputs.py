@@ -111,6 +111,25 @@ def index_name(cohort: str, split: str) -> str:
     return f"{cohort}_{split}.csv"
 
 
+def versioned_split_counts(split_dir: Path) -> tuple[dict[str, dict[str, int]] | None, str | None]:
+    """Validate an explicitly versioned dataset without weakening legacy checks."""
+    path = split_dir / "split_contract.json"
+    if not path.exists():
+        return None, None
+    contract = json.loads(path.read_text(encoding="utf-8"))
+    if contract.get("schema_version") != 1 or not contract.get("dataset_version"):
+        raise ValueError("invalid versioned split contract")
+    counts = contract["cohort_counts"]
+    for split in CACHE_SPLITS:
+        index = split_dir / f"{split}_index.csv"
+        if sha256_file(index) != contract["index_sha256"][split]:
+            raise ValueError(f"{split} index differs from the versioned split contract")
+        for cohort in ("all", "sleepy", "non_sleepy"):
+            if len(cohort_rows(index, cohort)) != counts[cohort][split]:
+                raise ValueError(f"{cohort}/{split} count differs from the versioned split contract")
+    return counts, sha256_file(path)
+
+
 def prepare_contract(
     *,
     output: Path,
@@ -123,10 +142,12 @@ def prepare_contract(
         "validation": split_dir / "validation_index.csv",
         "test": split_dir / "test_index.csv",
     }
+    versioned_counts, versioned_sha256 = versioned_split_counts(split_dir)
     rows = {name: cohort_rows(path, cohort) for name, path in source_paths.items()}
-    validate_cohort_splits(rows, cohort)
+    validate_cohort_splits(rows, cohort, expected_counts=(versioned_counts[cohort] if versioned_counts else None))
     validate_cohort_splits(
-        {name: cohort_rows(path, "all") for name, path in source_paths.items()}, "all"
+        {name: cohort_rows(path, "all") for name, path in source_paths.items()}, "all",
+        expected_counts=(versioned_counts["all"] if versioned_counts else None),
     )
     index_dir = output / "indexes"
     for name, split_rows in rows.items():
@@ -154,6 +175,7 @@ def prepare_contract(
         "schema_version": 1,
         "experiment": f"recurrent_local_tracer_{cohort}18",
         "cohort": cohort,
+        "versioned_split_contract_sha256": versioned_sha256,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "frozen_checkpoint": str(checkpoint.resolve()),
         "frozen_checkpoint_sha256": sha256_file(checkpoint),

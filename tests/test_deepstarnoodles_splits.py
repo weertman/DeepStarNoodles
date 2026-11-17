@@ -45,7 +45,7 @@ def test_grouped_splits_exist_and_are_disjoint() -> None:
         names[split] = {row["image_name"] for row in rows}
         for row in rows:
             groups.setdefault(row["split_group_id"], set()).add(split)
-    assert counts == {"train": 4062, "validation": 478, "test": 502}
+    assert counts == {"train": 4062, "validation": 478, "test": 553}
     assert names["train"].isdisjoint(names["validation"])
     assert names["train"].isdisjoint(names["test"])
     assert names["validation"].isdisjoint(names["test"])

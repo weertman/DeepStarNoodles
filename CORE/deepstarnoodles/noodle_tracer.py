@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import IntEnum
 from typing import NamedTuple, Sequence
 
@@ -344,6 +344,9 @@ class NoodleTracer(nn.Module):
         context_dilation: int = 2,
         pretrained_rgb: bool = True,
         freeze_rgb: bool = True,
+        rgb_features: bool = True,
+        embedding_features: bool = True,
+        reset_recurrent_state: bool = False,
         dense_mean: Sequence[float] | None = None,
         dense_std: Sequence[float] | None = None,
         min_step_px: float = 0.5,
@@ -352,6 +355,8 @@ class NoodleTracer(nn.Module):
         super().__init__()
         if dense_channels < 10 + embedding_dim:
             raise ValueError("dense channels do not contain the requested embedding")
+        if hidden_size < 1:
+            raise ValueError("hidden_size must be positive")
         if dense_patch_size < 9 or dense_patch_size % 4 != 1:
             raise ValueError("dense_patch_size must be >= 9 and satisfy P % 4 == 1")
         derived_spatial_size = (dense_patch_size + 3) // 4
@@ -383,8 +388,13 @@ class NoodleTracer(nn.Module):
         self.context_dilation = int(context_dilation)
         self.min_step_px = float(min_step_px)
         self.max_step_px = float(max_step_px)
+        # Persist controls in the checkpoint so decoding cannot silently restore
+        # features/state that were absent during training.
+        self.rgb_features = bool(rgb_features)
+        self.embedding_features = bool(embedding_features)
+        self.reset_recurrent_state = bool(reset_recurrent_state)
         self.rgb_encoder = SpatialRGBEncoder(
-            pretrained=pretrained_rgb,
+            pretrained=pretrained_rgb and self.rgb_features,
             frozen=freeze_rgb,
         )
         mean = (
@@ -444,6 +454,13 @@ class NoodleTracer(nn.Module):
         )
 
     def encode_rgb(self, image: torch.Tensor) -> RGBPyramid:
+        if not self.rgb_features:
+            # Keep the public pyramid contract while avoiding encoder execution.
+            return RGBPyramid(
+                fine=image.new_zeros((len(image), 16, 1, 1), dtype=torch.float32),
+                coarse=image.new_zeros((len(image), 24, 1, 1), dtype=torch.float32),
+                image_size=(int(image.shape[-2]), int(image.shape[-1])),
+            )
         return self.rgb_encoder(image)
 
     def sample_dense(
@@ -498,6 +515,13 @@ class NoodleTracer(nn.Module):
         positions: torch.Tensor,
         image_indices: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not self.rgb_features:
+            leading = (len(positions),) if self.context_mode == "single" else (len(positions), 2)
+            spatial = (self.rgb_feature_patch_size, self.rgb_feature_patch_size)
+            return (
+                positions.new_zeros((*leading, 16, *spatial)),
+                positions.new_zeros((*leading, 24, *spatial)),
+            )
         fine = _sample_feature_patches(
             pyramid.fine,
             positions,
@@ -566,8 +590,11 @@ class NoodleTracer(nn.Module):
             raise ValueError("previous_displacement must be (N,2)")
         if seed_embedding.shape != (count, self.embedding_dim):
             raise ValueError("seed_embedding has wrong shape")
-        if hidden is None:
+        if hidden is None or self.reset_recurrent_state:
             hidden = self.initial_state(count, device=dense_patches.device)
+        if not self.embedding_features:
+            # This also removes seed conditioning from attention and the GRU.
+            seed_embedding = torch.zeros_like(seed_embedding)
         if self.context_mode == "multiscale_dilated":
             dense_input = dense_patches.flatten(0, 1)
             fine_input = rgb_fine_patches.flatten(0, 1)
@@ -592,6 +619,12 @@ class NoodleTracer(nn.Module):
         identity_similarity = torch.exp(
             -0.5 * (identity_distance / max(float(identity_scale), 1e-4)).square()
         )
+        if not self.embedding_features:
+            # Mask after normalization: zero raw values would leave nonzero
+            # standardized offsets and allow the feature ablation to leak.
+            normalized = normalized.clone()
+            normalized[:, 10:10 + self.embedding_dim] = 0
+            identity_similarity = torch.zeros_like(identity_similarity)
         coordinate = torch.linspace(
             -1,
             1,
@@ -606,8 +639,13 @@ class NoodleTracer(nn.Module):
         dense_spatial = self.dense_stem(
             torch.cat((normalized, identity_similarity, coordinates), dim=1)
         )
-        rgb_fine = self.rgb_fine_projection(fine_input.float())
-        rgb_coarse = self.rgb_coarse_projection(coarse_input.float())
+        if self.rgb_features:
+            rgb_fine = self.rgb_fine_projection(fine_input.float())
+            rgb_coarse = self.rgb_coarse_projection(coarse_input.float())
+        else:
+            # Bypass projections too: their biases must not become RGB inputs.
+            rgb_fine = dense_spatial.new_zeros((len(dense_spatial), 16, self.spatial_size, self.spatial_size))
+            rgb_coarse = torch.zeros_like(rgb_fine)
         spatial = self.fusion(torch.cat((dense_spatial, rgb_fine, rgb_coarse), dim=1))
         condition = torch.cat(
             (hidden, previous_displacement.float(), seed_embedding.float()),
@@ -669,6 +707,9 @@ class NoodleTracer(nn.Module):
             # The state dict contains the actual RGB weights; avoid downloads on load.
             "pretrained_rgb": False,
             "freeze_rgb": self.rgb_encoder.frozen,
+            "rgb_features": self.rgb_features,
+            "embedding_features": self.embedding_features,
+            "reset_recurrent_state": self.reset_recurrent_state,
             "dense_mean": self.dense_mean.flatten().detach().cpu().tolist(),
             "dense_std": self.dense_std.flatten().detach().cpu().tolist(),
             "min_step_px": self.min_step_px,
@@ -1097,13 +1138,14 @@ def trace_arms_noodle_batch(
             "mean_identity_dist": 0.0,
             "length_px": length,
             "island_frac": 1.0,
-            "identity": seeds_np[index].copy(),
+            "identity": (seeds_np[index].copy() if model.embedding_features
+                         else np.zeros_like(seeds_np[index])),
             "state_confidence": float(state_confidence_np[index]),
             "stop_reason": stop_reason,
             "steps": path_count - 1,
         }
         outputs[image_index].append(arm)
-    if params.suppress_duplicates and params.embedding_dim:
+    if params.suppress_duplicates and params.embedding_dim and model.embedding_features:
         outputs = [
             _suppress_duplicates_and_fragments(image_arms, EmbedDecodeParams())
             for image_arms in outputs
@@ -1151,6 +1193,27 @@ def save_noodle_tracer_checkpoint(
     if training_state is not None:
         payload["training_state"] = training_state
     torch.save(payload, path)
+
+
+# Invalid-seed threshold of the released tracer, chosen on the validation
+# split. The published tracer.pt does not store it.
+RELEASED_INVALID_SEED_THRESHOLD = 0.6
+
+
+def resolve_invalid_seed_threshold(
+    params: NoodleTraceParams,
+    threshold: float | None = None,
+) -> NoodleTraceParams:
+    """Return trace parameters with the invalid-seed threshold for inference.
+
+    An explicit ``threshold`` wins. Otherwise a value stored in the checkpoint
+    is kept, and a checkpoint without one gets the released threshold.
+    """
+    if threshold is not None:
+        return replace(params, invalid_seed_threshold=float(threshold))
+    if params.invalid_seed_threshold is None:
+        return replace(params, invalid_seed_threshold=RELEASED_INVALID_SEED_THRESHOLD)
+    return params
 
 
 def load_noodle_tracer_checkpoint(

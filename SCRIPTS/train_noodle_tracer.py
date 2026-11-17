@@ -60,6 +60,8 @@ def parse_args() -> argparse.Namespace:
                         help="Use a separate fixed validation cohort and cache.")
     parser.add_argument("--repeated-train-cache", action="store_true",
                         help="Train on a generation with several augmented draws of every image.")
+    parser.add_argument("--train-source-cohort", choices=("all", "sleepy"), default="all",
+                        help="filter verified training cache rows; validation and normalization stay fixed")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=20260807)
@@ -99,6 +101,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--support-weight", type=float, default=0.0)
     parser.add_argument("--endpoint-weight", type=float, default=0.0)
     parser.add_argument("--hidden-size", type=int, default=128)
+    parser.add_argument("--rgb-features", action=argparse.BooleanOptionalAction, default=True,
+                        help="Use RGB features; --no-rgb-features persists the ablation for decoding.")
+    parser.add_argument("--embedding-features", action=argparse.BooleanOptionalAction, default=True,
+                        help="Use embedding channels/conditioning and identity postprocessing.")
+    parser.add_argument("--reset-recurrent-state", action=argparse.BooleanOptionalAction, default=False,
+                        help="Reset state before both attention and GRU at every training/decoding step.")
     parser.add_argument("--dense-patch-size", type=int, default=33)
     parser.add_argument(
         "--context-mode",
@@ -153,6 +161,26 @@ SCHEDULE_SIGNATURE_KEYS = ("lr", "min_lr", "lr_decay_epochs", "warmup_epochs")
 RELOCATABLE_SIGNATURE_PATHS = (
     "study_root", "validation_study_root", "normalization_json",
 )
+MODEL_CONTROL_DEFAULTS = {
+    "rgb_features": True,
+    "embedding_features": True,
+    "reset_recurrent_state": False,
+}
+
+
+def validate_normalization_source(normalization: dict, checkpoint_sha256: str) -> None:
+    """Reject known wrong-Hydra or non-training statistics before a fit starts."""
+    if normalization.get("source_split", "train") != "train":
+        raise ValueError("normalization must be computed from training pixels")
+    source = normalization.get("frozen_checkpoint_sha256")
+    if source is not None and source != checkpoint_sha256:
+        raise ValueError("normalization belongs to a different frozen Hydra checkpoint")
+
+
+def validate_model_options(model: NoodleTracer, args: argparse.Namespace) -> None:
+    for name in ("hidden_size", *MODEL_CONTROL_DEFAULTS):
+        if getattr(model, name) != getattr(args, name):
+            raise ValueError(f"checkpoint model option {name} differs from requested arguments")
 
 
 def training_signature(args: argparse.Namespace) -> dict[str, Any]:
@@ -652,6 +680,13 @@ def main() -> int:
         val_manifest,
         augment=OutputAugment(enabled=False),
     )
+    if args.train_source_cohort == "sleepy":
+        if any(not record.get("source_family") for record in train_dataset.records):
+            raise ValueError("source-filtered training requires source_family on every cache row")
+        train_dataset.records = [record for record in train_dataset.records
+                                 if record["source_family"] == "sleepy_stars"]
+        if not train_dataset.records:
+            raise ValueError("source-filtered training cache has no Sleepy records")
     if args.max_train_images is not None:
         train_dataset.records = train_dataset.records[:args.max_train_images]
     if args.max_val_images is not None:
@@ -693,6 +728,10 @@ def main() -> int:
             device=device,
         )
         expected_signature = metadata.get("training_signature")
+        if isinstance(expected_signature, dict):
+            # Old baseline checkpoints predate these persisted controls.
+            expected_signature = {**MODEL_CONTROL_DEFAULTS, "train_source_cohort": "all",
+                                  **expected_signature}
         current_signature = training_signature(args)
         lr_decay_extension = metadata.get("lr_decay_extension")
         path_relocation = metadata.get("path_relocation")
@@ -796,14 +835,19 @@ def main() -> int:
             hidden_size=args.hidden_size,
             pretrained_rgb=args.pretrained_rgb,
             freeze_rgb=args.freeze_rgb,
+            rgb_features=args.rgb_features,
+            embedding_features=args.embedding_features,
+            reset_recurrent_state=args.reset_recurrent_state,
             dense_mean=mean,
             dense_std=std,
             min_step_px=args.min_step_px,
             max_step_px=args.max_step_px,
         ).to(device)
+    validate_model_options(model, args)
     if args.normalization_json is not None:
         normalization_path = args.normalization_json.expanduser().resolve()
         normalization = json.loads(normalization_path.read_text(encoding="utf-8"))
+        validate_normalization_source(normalization, contract["frozen_checkpoint_sha256"])
         explicit_mean = torch.as_tensor(
             normalization["mean"], dtype=model.dense_mean.dtype, device=device
         )
@@ -872,6 +916,8 @@ def main() -> int:
             "loaded_dense_mean": model.dense_mean.flatten().detach().cpu().tolist(),
             "loaded_dense_std": model.dense_std.flatten().detach().cpu().tolist(),
             "normalization_json": str(args.normalization_json.resolve()) if args.normalization_json else None,
+            "training_records": len(train_dataset),
+            "validation_records": len(validation_dataset),
         },
     )
     metric_path = args.out_dir / "metrics.csv"

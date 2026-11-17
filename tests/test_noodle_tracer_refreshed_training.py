@@ -50,6 +50,7 @@ def write_study(root: Path, counts: dict[str, int]) -> None:
             write_cache_record(root / "cache" / name, raw, image, [arm], cache_identity=f"{split}{index}")
             records.append({"cache_file": name, "cache_identity": f"{split}{index}",
                             "image_sha256": "i", "shapes_sha256": "s",
+                            "source_family": "sleepy_stars" if index == 0 else "other",
                             "split_group_id": f"group-{split}-{index % 2}"})
         manifest = {
             "schema_version": FROZEN_CACHE_SCHEMA,
@@ -212,3 +213,53 @@ def test_repeated_augmented_draws_train_for_any_cohort(monkeypatch, study):
         run_trainer(monkeypatch, study, "plain", 1)
     out_dir = run_trainer(monkeypatch, study, "repeated", 1, "--repeated-train-cache")
     assert float(last_row(out_dir)["train_optimizer_steps"]) == 5.0
+
+
+@pytest.mark.parametrize("flag, config_key, expected", [
+    ("--no-rgb-features", "rgb_features", False),
+    ("--no-embedding-features", "embedding_features", False),
+    ("--reset-recurrent-state", "reset_recurrent_state", True),
+])
+def test_control_training_persists_semantics_and_guards_resume(monkeypatch, study, flag, config_key, expected):
+    first = run_trainer(monkeypatch, study, "control", 1, flag)
+    payload = torch.load(first / "last.pt", map_location="cpu", weights_only=False)
+    assert payload["model_config"][config_key] is expected
+    assert float(last_row(first)["train_optimizer_steps"]) == 5
+    with pytest.raises(ValueError, match="resume training signature differs"):
+        run_trainer(monkeypatch, study, "refused", 2, "--resume", str(first / "last.pt"))
+    resumed = run_trainer(monkeypatch, study, "resumed", 2, flag, "--resume", str(first / "last.pt"))
+    assert float(last_row(resumed)["train_optimizer_steps"]) == 5
+
+
+def test_warm_start_cannot_silently_change_requested_width(monkeypatch, study):
+    first = run_trainer(monkeypatch, study, "source", 1)
+    with pytest.raises(ValueError, match="model option hidden_size"):
+        run_trainer(monkeypatch, study, "refused_width", 1, "--hidden-size", "64",
+                    "--init-checkpoint", str(first / "last.pt"))
+
+
+def test_zero_rollout_stays_zero_and_is_resume_guarded(monkeypatch, study):
+    first = run_trainer(monkeypatch, study, "no_rollout", 1, "--rollout-probability", "0")
+    payload = torch.load(first / "last.pt", map_location="cpu", weights_only=False)
+    assert payload["metadata"]["training_signature"]["rollout_probability"] == 0
+    assert all(train_noodle_tracer.rollout_probability(epoch, 0, 12) == 0 for epoch in range(1, 31))
+    with pytest.raises(ValueError, match="resume training signature differs"):
+        run_trainer(monkeypatch, study, "refused_rollout", 2, "--resume", str(first / "last.pt"))
+
+
+def test_sleepy_consumer_filters_shared_cache_only_and_preserves_full_validation(monkeypatch, study):
+    baseline = run_trainer(monkeypatch, study, "mixed", 1)
+    sleepy = run_trainer(monkeypatch, study, "sleepy", 1, "--train-source-cohort", "sleepy")
+    mixed_config = json.loads((baseline / "config.json").read_text())
+    sleepy_config = json.loads((sleepy / "config.json").read_text())
+    assert mixed_config["training_records"] == 3
+    assert sleepy_config["training_records"] == 1
+    assert mixed_config["validation_records"] == sleepy_config["validation_records"] == 2
+    assert mixed_config["loaded_dense_mean"] == sleepy_config["loaded_dense_mean"]
+    assert float(last_row(sleepy)["train_optimizer_steps"]) == 5
+    with pytest.raises(ValueError, match="resume training signature differs"):
+        run_trainer(monkeypatch, study, "mixed_from_sleepy_refused", 2,
+                    "--resume", str(sleepy / "last.pt"))
+    # The source filtering never rewrites the shared manifest or cache records.
+    manifest = json.loads((study["train"] / "cache" / "train_manifest.json").read_text())
+    assert len(manifest["records"]) == 3

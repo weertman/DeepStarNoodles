@@ -1,4 +1,12 @@
-# Published arm tracer (selected 2026-10-17)
+# October 2026 development tracer (selected 2026-10-17)
+
+> **Superseded.** This record describes a development tracer trained before the
+> datasets were frozen. It is not the tracer of the paper. The published models
+> are `starseg_binary.pt`, `hydra.pt` and `tracer.pt`; see the
+> [README](../README.md#released-models-and-data). The files named below remain
+> in Hugging Face revision `0881c427eb0f1f564ef76fbd8399173121169132`, and the
+> `config/artifacts.json` entries they mention now have role `earlier-model` or
+> `earlier-record`.
 
 ## Decision
 
