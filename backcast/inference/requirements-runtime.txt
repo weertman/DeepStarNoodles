@@ -1,0 +1,26 @@
+# Container runtime pins. Torch/torchvision come from the cu128 base image.
+numpy==2.2.6
+scipy==1.15.3
+pillow==11.2.1
+opencv-python==4.11.0.86
+ultralytics==8.4.51
+lap==0.5.13
+matplotlib==3.10.3
+PyYAML==6.0.2
+requests==2.32.4
+psutil==7.0.0
+polars==1.40.1
+polars-runtime-32==1.40.1
+ultralytics-thop==2.0.19
+contourpy==1.3.2
+cycler==0.12.1
+fonttools==4.58.0
+kiwisolver==1.4.8
+packaging==25.0
+pyparsing==3.2.3
+python-dateutil==2.9.0.post0
+six==1.17.0
+certifi==2025.4.26
+charset-normalizer==3.4.2
+idna==3.10
+urllib3==2.4.0

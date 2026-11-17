@@ -1,0 +1,62 @@
+{
+ "sequence_id": "flip_example_01",
+ "description": "One sea star in one lab self-righting video: GRU Noodle Tracer arm polylines (base->tip, 512-px crop coordinates) for 181 frames at 2 Hz. Polylines and per-frame context only; no image pixels.",
+ "license": "CC-BY-4.0",
+ "fps": 2.0,
+ "model_size": 512,
+ "source_format": "flipping",
+ "n_frames": 181,
+ "n_arms": 1226,
+ "n_points": 34144,
+ "trace_contract": {
+  "tracer": "released full-corpus GRU Noodle Tracer",
+  "invalid_seed_threshold": 0.6,
+  "resample_spacing_px": 4.0,
+  "smooth_window": 5
+ },
+ "tracker_config": {
+  "shape_gate": 120.0,
+  "embed_weight": 2.0,
+  "max_age": 16,
+  "max_match_cost": 90.0,
+  "k_track": 12,
+  "body_origin": "body_origin_model"
+ },
+ "track_id": "stored association from a warm-started run over the whole recording (FusedTracker, tracker_config); a cold-start re-link of this excerpt alone gives different IDs for some arms",
+ "body_origin_code": {
+  "0": "mouth peak",
+  "1": "support > 0.3 centroid",
+  "2": "crop centre",
+  "-1": "not traced"
+ },
+ "stop_reason_code": {
+  "0": "base",
+  "1": "loop",
+  "2": "max_steps",
+  "3": "max_path",
+  "4": "lost",
+  "5": "stop"
+ },
+ "time_origin": "time_s and frame_index count from the start of the original recording",
+ "bouts": [
+  {
+   "flip_start_s": 331.0,
+   "upside_down_start_s": 334.0,
+   "right_side_up_start_s": 365.0,
+   "first_time_s": 327.0,
+   "last_time_s": 369.0,
+   "duration_s": 31.0,
+   "pre_onset_frames": 8
+  },
+  {
+   "flip_start_s": 370.0,
+   "upside_down_start_s": 375.0,
+   "right_side_up_start_s": 398.0,
+   "first_time_s": 365.0,
+   "last_time_s": 403.0,
+   "duration_s": 23.0,
+   "pre_onset_frames": 10
+  }
+ ],
+ "bout_fields": "Self-righting bouts from human posture labels on the 1-s grid (every second 2-Hz frame): flip_start_s = first Being-flipped sample, upside_down_start_s / right_side_up_start_s = first samples of those states, first_time_s..last_time_s = analysis window (<= 5 s right-side-up context each side), duration_s = righting time; pre_onset_frames = star frames in [first_time_s, flip_start_s) used for the pre-onset body radius R0."
+}

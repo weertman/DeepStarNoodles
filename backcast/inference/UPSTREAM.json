@@ -1,0 +1,141 @@
+{
+  "repository": "https://github.com/weertman/DeepStarNoodles",
+  "vendored_at": "2026-10-28",
+  "files": [
+    {
+      "source": "CORE/deepstarnoodles/model.py",
+      "sha256": "d0a36bcf2cf15b09274eaa2d6096fe3e91909f166511a45726e8f5b52bbed223"
+    },
+    {
+      "source": "CORE/deepstarnoodles/hydra.py",
+      "sha256": "65a65504e9c0326ae8295590b7a4efb6c6dd9d6adfe1277acf48f3c9cb1f43cc"
+    },
+    {
+      "source": "CORE/deepstarnoodles/crop.py",
+      "sha256": "1776977aa1016ebd12dc9c15aba90ee7b524cf75d4bf301baf1789101701e5f8"
+    },
+    {
+      "source": "CORE/deepstarnoodles/noodle_tracer.py",
+      "sha256": "ac9ffcd2f251f7b3c0fac2c52b0ba977ac8bc7b4309255bcc4c474108e852730"
+    },
+    {
+      "source": "CORE/deepstarnoodles/decode.py",
+      "sha256": "71b787ea898a1aa433968b6056fa49fe25c15130f9e793c08cbc8953e97cb2c4"
+    },
+    {
+      "source": "CORE/deepstarnoodles/decode_embed.py",
+      "sha256": "30650f5c9488009583c1a0edd38a5b68577765839e0bbaf1ad4d45abd3f6df9c"
+    },
+    {
+      "source": "CORE/deepstarnoodles/temporal_quality.py",
+      "sha256": "4deee9b4e528c072bbade30f0c9d04e76a4c6a59ef111030cd5d1fbf6aeb2f0c"
+    },
+    {
+      "source": "CORE/deepstarnoodles/fused_tracker.py",
+      "sha256": "cbf4267655ffb9ee33f00f0b70769416e65b1f9b5bd99ad8868976ae2f276674"
+    },
+    {
+      "source": "CORE/deepstarnoodles/runtime.py",
+      "sha256": "cbdd1214bab456c2bce4821b1da1651b964fc1b84815adb3e0ec38edbdcf211b"
+    }
+  ],
+  "dinov3": {
+    "source": "external/dinov3/dinov3/models/convnext.py",
+    "sha256": "ab969325158df58f4b0957f81f77d543392df61611dc0c72e89ba172ecdf0fb9",
+    "note": "Unmodified runtime-only ConvNeXt implementation; no pretrained weights bundled."
+  },
+  "noodle_polylines": {
+    "source_commit": "f749a4906de639b9a36c08ff0def015dbe558ff1",
+    "destination": "src/deepstarnoodles_inference/_vendor/noodle_polylines",
+    "vendored_at": "2026-11-03",
+    "note": "Unmodified copy of CORE/noodle_polylines (numpy+scipy, relative imports only). Inference-side adapter and CLI live in deepstarnoodles_inference/representations.py.",
+    "files": [
+      {
+        "source": "CORE/noodle_polylines/__init__.py",
+        "sha256": "67f151b48566d5ee55fd44c8a3124691131773ee3cd759ead2acd7a4650739be"
+      },
+      {
+        "source": "CORE/noodle_polylines/_assoc.py",
+        "sha256": "042dd36c3495069a9ba5e224956399a7423543a5d3d36e0e5af24b70f48b96a6"
+      },
+      {
+        "source": "CORE/noodle_polylines/_csr.py",
+        "sha256": "c82c569635b9dd295384b91ef5a37d8c0de934860b1cf70fe4232010877be769"
+      },
+      {
+        "source": "CORE/noodle_polylines/_reference.py",
+        "sha256": "546e6222465ea3603b6d0f58b8cb889b4b6e1ceb276577d4b8fd31e9a9a3e1d7"
+      },
+      {
+        "source": "CORE/noodle_polylines/_segments.py",
+        "sha256": "4fc66eb33f9f7d392cd13e63632aa06bca8dfd9f7e053b773fb7630ac3baf608"
+      },
+      {
+        "source": "CORE/noodle_polylines/adapters.py",
+        "sha256": "ef23588dac54be4949039fbec435f068bd529e032348b04d5722f646ece4e423"
+      },
+      {
+        "source": "CORE/noodle_polylines/container.py",
+        "sha256": "ab5dd0b8bab10f0e276c222ff3e693fc3bab80853f8b8d6dcc58a409cedb8f8c"
+      },
+      {
+        "source": "CORE/noodle_polylines/frames.py",
+        "sha256": "e29625987926e2d71f801a6ed5cfc4cbac8eec6e97360515114772f178b4ed63"
+      },
+      {
+        "source": "CORE/noodle_polylines/geometry.py",
+        "sha256": "121e27c6275e1f0c991906a1caa271efff818b950bfd2f0b049c84cc3292dedc"
+      },
+      {
+        "source": "CORE/noodle_polylines/kinematics.py",
+        "sha256": "820c761a8016d5e6710b50f105c7d51c874e5013f7b4293809ae7ead0ae1696a"
+      },
+      {
+        "source": "CORE/noodle_polylines/pipeline.py",
+        "sha256": "edb330ed8f13fb41cbad91897f35c7626c95354df988c62ff188b0d24a78509b"
+      },
+      {
+        "source": "CORE/noodle_polylines/presets.py",
+        "sha256": "06a9b94ed9a29a853b7600b9f42258180eedc64cbb11b8c2e88aad21366e796a"
+      },
+      {
+        "source": "CORE/noodle_polylines/scale.py",
+        "sha256": "c940ffa35603e0a5a7c383121e948f48e0446f731ee064e19d90a1e2679cc443"
+      },
+      {
+        "source": "CORE/noodle_polylines/tracking.py",
+        "sha256": "aca77744a9ab02aed63179c175b90fff6ec9b1e794734449bdef197bd2909fba"
+      }
+    ],
+    "test_data": [
+      {
+        "source": "examples/noodle_polylines/data/flip_example_01.npz",
+        "destination": "tests/fixtures/polylines/flip_example_01.npz",
+        "sha256": "54badd6a1aa3dcae0611069a9dbf0a2d6ab353ca454d22a82ce72c95aa70e7ca"
+      },
+      {
+        "source": "examples/noodle_polylines/data/flip_example_01.json",
+        "destination": "tests/fixtures/polylines/flip_example_01.json",
+        "sha256": "be6d583a70aa5c142831d6cbce8840ec18f26d2e75c877f89b1b7a47501e76d2"
+      },
+      {
+        "source": "tests/fixtures/noodle_polylines/micro_arms.npz",
+        "destination": "tests/fixtures/polylines/micro_arms.npz",
+        "sha256": "a9b70afa718598bcf5ee37d9a7db90e3d4322a8707f8005434cb682ce1f7a9c8"
+      },
+      {
+        "source": "tests/fixtures/noodle_polylines/micro_frames.npz",
+        "destination": "tests/fixtures/polylines/micro_frames.npz",
+        "sha256": "0e45862d87497a31642e3abbd5810a6d98c1bbf9ee81ddf6c4e98fbb03dd2216"
+      },
+      {
+        "source": "tests/fixtures/noodle_polylines/micro_meta.json",
+        "destination": "tests/fixtures/polylines/micro_meta.json",
+        "sha256": "2810c13823ebabd34043560f91d133f5b98edabca48d0dcc37064c1719575ef1"
+      }
+    ],
+    "tests": {
+      "note": "tests/test_polylines_*.py port tests/test_noodle_polylines_*.py at the same commit: imports and fixture paths rewritten, test_imports_without_torch retargeted to the vendored copy; test_parity_comparator_rejects_infinities, test_bench_tiling_keeps_missing_ids and test_committed_files_do_not_name_the_example_source dropped (they need the unvendored benchmarks/ or a DeepStarNoodles checkout)."
+    }
+  }
+}

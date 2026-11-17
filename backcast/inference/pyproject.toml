@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools==79.0.1", "wheel==0.46.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepstarnoodles-inference"
+version = "0.5.0.dev12"
+description = "Portable GPU inference for StarSeg, Hydra dense pose, and GRU arm tracing"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT; bundled DINOv3 and BoT-SORT material retains its own license"}
+authors = [{name = "Weertman"}]
+dependencies = [
+  "torch>=2.6,<2.9", "torchvision>=0.21,<0.24",
+  "numpy>=1.26,<3", "scipy>=1.14,<2", "pillow>=11,<13",
+  "opencv-python>=4.11,<5", "ultralytics==8.4.51", "lap==0.5.13",
+]
+
+[project.optional-dependencies]
+test = ["pytest==9.0.2"]
+# Reading .jsonl.zst in `representations` before Python 3.14 (or pipe through `zstd -dc`).
+representations = ["zstandard>=0.22"]
+
+[project.scripts]
+deepstarnoodles-inference = "deepstarnoodles_inference.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+deepstarnoodles_inference = ["config/*.yaml", "config/*.txt", "_vendor/dinov3/LICENSE.md"]
+
+[tool.setuptools]
+license-files = ["LICENSE", "licenses/*", "THIRD_PARTY_NOTICES.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
