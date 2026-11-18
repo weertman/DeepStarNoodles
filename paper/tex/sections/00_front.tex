@@ -1,0 +1,56 @@
+\begin{flushleft}
+{\Large
+\textbf{DeepStarNoodles: A deep-learning pipeline for high-throughput behavioral analysis of sunflower stars}
+}
+\newline
+\\
+Willem Weertman\textsuperscript{1,2*},
+Dalton Blackwell\textsuperscript{2},
+Chloe Schwab\textsuperscript{2},
+Julia Knopf\textsuperscript{2},
+Tess Chapman\textsuperscript{2},
+Pema Kitaeff\textsuperscript{2},
+Brooke Ashcraft\textsuperscript{2},
+Rebecca Guenther\textsuperscript{2},
+Jason Hodin\textsuperscript{2}
+\\
+\bigskip
+\textbf{1} Department of Psychology, University of Washington, Seattle, Washington, United States of America
+\\
+\textbf{2} Friday Harbor Laboratories, University of Washington, Friday Harbor, Washington, United States of America
+\\
+\bigskip
+
+* willemlw@uw.edu
+
+\end{flushleft}
+
+\section*{Abstract}
+
+Pose-estimation tools locate a fixed list of body points, which does not describe an animal whose number of arms varies.
+The sunflower sea star, \textit{Pycnopodia helianthoides}, is such an animal: individuals in our images have 3 to 28 arms that look alike and bend along their whole length.
+The species is Critically Endangered and is now reared in captivity, where behaviour is scored by observers.
+We describe DeepStarNoodles, a pipeline that returns one base-to-tip polyline for each arm of each animal in a frame and links arms from frame to frame.
+A detector outlines each animal, a second network predicts 18 dense maps of arm geometry on the crop, and a recurrent network with 194,463 parameters walks along each arm from tip to base.
+Training used 7,978 images with instance masks and 5,093 crops with 57,055 annotated arms.
+On test images the detector had precision 0.920 and recall 0.903; recall was 0.924 on laboratory images and 0.668 on field images apart from one cruise that also supplied training images.
+The tracer reached an F1 of 0.755 averaged over 180 acquisition groups, against 0.705 for a shortest-path decoder of the same maps (difference 5.0 percentage points, 95\% CI 4.0 to 6.0).
+Matched arms lay a median of 2.7~px from the annotation in a 512~px crop.
+Accuracy was lowest for animals with few arms.
+On one rented GPU the pipeline processed 58 frames per second of streamed video.
+In recordings of animals righting themselves after inversion, righting times read from the pipeline outputs had a mean absolute difference of 2.4~s from an observer's over 273 bouts.
+Across 96 changes from a quiescent to an alert state, arm-tip motion rose by a median of 63\%.
+Code is at \url{https://github.com/weertman/DeepStarNoodles}; models and annotated data are on Hugging Face.
+
+\section*{Author summary}
+
+Sunflower sea stars were once common along the Pacific coast of North America, and a disease outbreak that began in 2013 killed most of them.
+Laboratories now raise the species, and we film the animals to learn how they behave.
+Turning that video into measurements is the slow step.
+Software built for mice or flies follows a fixed set of body points.
+A sunflower sea star has no fixed set: one animal may have eight arms and another more than twenty, and every arm can bend anywhere along its length.
+We built software that finds each animal in a video frame and draws a line along each of its arms.
+It first marks where arms are and which way they run, and then walks along each arm in small steps, as a person might trace it with a pencil.
+We measured how often the traced arms agree with arms drawn by people, where the software fails, and how fast it runs.
+As examples, we timed how long overturned animals took to right themselves, and measured how arm movement changed as resting animals became alert.
+We share the software, the trained models and the annotated images.

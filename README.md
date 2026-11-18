@@ -21,6 +21,7 @@ not validated measurements of biological arm identity.
 | Arm dataset | [Hugging Face `weertman/deepstarnoodles-data`](https://huggingface.co/datasets/weertman/deepstarnoodles-data) (gated), version `noodles_final_20261026` |
 | Fast video inference | [`deepstarnoodles-inference`](https://github.com/weertman/deepstarnoodles-inference): a packaged, compiled pipeline for long recordings |
 | Annotating an archive on rented GPUs | [`backcast/`](backcast/README.md) |
+| Methods paper (draft) | [`paper/`](paper/README.md): main text and S1 Text as PDF, LaTeX source, figure scripts |
 
 Start with the [quick start](#quick-start), use the [project map](#project-map)
 to navigate the code, or jump to [training and evaluation](#training-and-evaluation),
@@ -31,28 +32,37 @@ to navigate the code, or jump to [training and evaluation](#training-and-evaluat
 
 ```mermaid
 flowchart TD
-    Video[Video frames] --> Crop[StarSeg detection and square RGB crops]
-    Crop --> Hydra[Hydra: dense pose and arm embeddings]
-    Crop --> Tracer[Noodle Tracer: arm polylines]
-    Hydra --> Tracer
-    Tracer --> Tracker[FusedTracker: causal arm association]
-    Tracker --> Output[Tracking JSON and optional overlay video]
-    Tracer --> Bag[Arm-shape representations]
-    Tracker --> Motion[Arm-motion representations]
-    Hydra --> VAE[Progress temporal VAE]
+    Input["Image or video frame"] --> Detect["Detect · StarSeg<br/>YOLO26-L segmentation<br/>multi-star: BoT-SORT IDs"]
+    Detect --> Crop["Square crop per star<br/>2 × box side, 512 × 512"]
+    Crop --> Map["Map · Hydra<br/>18 dense maps"]
+    Map -- raw maps --> Trace["Trace · Noodle Tracer<br/>a GRU walks each arm<br/>from tip to base"]
+    Crop -- RGB --> Trace
+    Trace -- "arms + tip identity" --> Track["Track · FusedTracker<br/>arm IDs across frames"]
+    Map -- body centre --> Track
+    Track --> Output["Tracking JSON<br/>optional overlay MP4"]
+    Trace --> Bag["arm_bag<br/>arm-shape summary"]
+    Output --> Motion["arm_motion<br/>tracked-arm motion"]
+    Output --> Polylines["noodle_polylines<br/>paper-figure quantities"]
+    Map -.-> VAE["Progress temporal VAE<br/>earlier model, not validated<br/>with hydra.pt"]
+    classDef analysis fill:#f6f8fa,stroke:#8c959f,stroke-dasharray:4 3,color:#24292f
+    class Bag,Motion,Polylines,VAE analysis
 ```
 
-- **StarSeg** detects sunflower stars and creates a square crop around each
-  detection.
+- **StarSeg** is a YOLO26-L segmentation model that finds each sunflower star
+  (the binary detector by default). Each detection gets a square crop, twice
+  the longer side of its box, resized to 512 × 512. In multi-star video,
+  BoT-SORT gives each star an ID.
 - **Hydra** combines a DINOv3 ConvNeXt-Base backbone with an FPN and prediction
   heads to produce an 18-channel dense field: ten geometry, landmark, and
   endpoint channels plus an eight-channel arm embedding.
-- **Noodle Tracer** uses the image crop and dense field to generate one
-  base-to-tip polyline for each detected arm.
+- **Noodle Tracer** starts a walker at every tip peak. At each step a GRU reads
+  a 33 × 33 window of the raw fields and image features, and predicts the next
+  step and whether to stop at the base. Tips it rates as not a tip (p ≥ 0.6 by
+  default) are dropped. The output is one base-to-tip polyline per arm.
 - The **fused tracker** assigns video-local association IDs to arm
-  observations using body-relative shape and identity embeddings. Multi-star
-  mode first assigns animal IDs with BoT-SORT and keeps an independent arm
-  tracker for each animal.
+  observations using body-relative shape and identity embeddings. The body
+  centre is Hydra's mouth peak, or the centroid of the arm support if there is
+  none. Multi-star mode keeps an independent arm tracker for each star.
 
 The released Hydra operates on 512×512 RGB crops. Its channel contract is
 defined in [`model.py`](CORE/deepstarnoodles/model.py):
@@ -152,11 +162,14 @@ Add `alternative-detector` to also check the fine and coarse detectors, and
 `pretrained-backbone` if you downloaded the Meta file. Validation hashes the
 files listed in the manifest; it does not hash every image.
 
-The detection dataset on which the detectors were trained and scored is the
-frozen version `starseg_yolo26_20261106` (7,978 images; 5,600 / 1,129 / 1,249
-for training, validation and test). The Hugging Face repository
-[`weertman/starseg`](https://huggingface.co/datasets/weertman/starseg)
-currently holds an earlier three-class version of that dataset.
+Training and scoring the detectors needs the
+[detection dataset](https://huggingface.co/datasets/weertman/starseg), version
+`starseg_yolo26_20261106` (7,978 images; 5,600 / 1,129 / 1,249 for training,
+validation and test). It downloads into `DATA/starseg_yolo26_20261106/`:
+
+```bash
+hf download weertman/starseg --repo-type dataset --local-dir DATA
+```
 
 ### 3. Process a video
 
@@ -277,7 +290,8 @@ dataset (split 4,062 / 478 / 502). They were trained before the datasets were
 frozen and are not the models of the paper. They remain in the history of the
 Hugging Face repositories (models: revision
 `0881c427eb0f1f564ef76fbd8399173121169132`; arm data: revision
-`9590c93f0eac2ad39924ad81902ccafa626e77ec`), are listed in
+`9590c93f0eac2ad39924ad81902ccafa626e77ec`; the earlier three-class detection
+data: revision `c61eabd0f8af8ae051019e27df7d8e102d477c39`), are listed in
 `config/artifacts.json` with role `earlier-model` or `earlier-dataset`, and
 their selection and test records are in [`config/locked/`](config/locked/) and
 [`docs/published-tracer.md`](docs/published-tracer.md).
@@ -293,6 +307,7 @@ their selection and test records are in [`config/locked/`](config/locked/) and
 | [`docs/`](docs/) | Representation API and earlier recipe documentation |
 | [`huggingface/`](huggingface/) | Model and dataset cards of the Hugging Face repositories |
 | [`backcast/`](backcast/README.md) | Annotating a long archive of 1 fps video on rented GPUs, then tracking and representations |
+| [`paper/`](paper/README.md) | The methods paper: PDFs, LaTeX source and figure scripts |
 | [`tests/`](tests/) | Unit, integration, and optional local-artifact checks |
 | [`examples/`](examples/), [`benchmarks/`](benchmarks/) | Micro example data and scripts; benchmark and parity tools |
 | [`external/dinov3/`](external/dinov3/) | Vendored DINOv3 source under Meta's license |

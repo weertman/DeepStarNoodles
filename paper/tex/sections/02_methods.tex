@@ -1,0 +1,100 @@
+% Scales: precision, recall and F1 are proportions (0 to 1); differences are percentage points.
+\section*{Materials and methods}
+
+\subsection*{Detector and cropping}
+
+The detector is a YOLO26-L instance-segmentation model~\cite{jocher2026ultralytics} with two classes: sunflower sea star, and any other annotated animal or prey item.
+We trained 20 configurations (five model sizes by four ways of labelling the other objects; \nameref{S1_Fig}) with three seeds each.
+A rule registered before the test images were read picked the configuration with the highest mean validation mask average precision for the sunflower sea star class, and the published model is its seed 0.
+Detections with confidence of at least 0.25 are kept.
+Each one gives a square crop centred on its bounding box, with a side twice the larger box dimension, resized to 512 $\times$ 512~px.
+In video, BoT-SORT~\cite{aharon2022botsort} links detections of the same animal across frames.
+
+\subsection*{Field network}
+
+The field network maps the crop to 18 maps at the resolution of the crop (Fig~\ref{fig:fields}A and \ref{fig:fields}B).
+It has a DINOv3 ConvNeXt-Base backbone~\cite{simeoni2025dinov3,liu2022convnet}, a feature pyramid~\cite{lin2017feature} and five prediction heads, with 90.9 million parameters in total.
+The maps are arm support (a band 8~px wide around each arm), the centreline, the direction from base to tip, progress from 0 at the base to 1 at the tip, spots at arm bases, arm tips and three landmarks (mouth, madreporite and anus), and an eight-channel embedding.
+The embedding is trained~\cite{debrabandere2017semantic} so that pixels of one arm lie close together and pixels of different arms lie apart.
+Tables~C and D in \nameref{S1_Text} list the maps, losses and training settings.
+
+\begin{figure}[!ht]
+\FIG{Fig2}{\linewidth}
+\caption{{\bf Dense maps predicted from a crop, and one step of the tracer.}
+(A) A crop from the validation split, its annotation (arm polylines with arrows from base to tip, and landmark points) and the training targets drawn from the annotation.
+(B) The field network and its 18 output maps for the same crop. Direction is shown as hue, and the embedding as its first three principal components. Yellow squares mark the patch read in C.
+(C) One tracing step. A 33 $\times$ 33~px patch of the 18 maps, the similarity of each pixel's embedding to that of the starting tip, and position ramps pass through a convolutional encoder. Image features at the same position are fused with them by attention. A gated recurrent unit (GRU) with hidden state $h$ predicts the next step, here 5.9~px long, and the state of the trace.
+(D) One trace from tip to base, and all 13 arms of this animal traced in parallel at steps 0, 14 and 29. Squares are the patches read by each walker; yellow marks the highlighted arm. The plotting code was written with coding agents (see Methods).}
+\label{fig:fields}
+\end{figure}
+
+\subsection*{Tracer}
+
+Tracing starts at the local maxima of the tip map (Fig~\ref{fig:fields}C and \ref{fig:fields}D).
+At each step the tracer reads a 33 $\times$ 33~px patch of the 18 maps around its position.
+It also reads the similarity of each pixel's embedding to the embedding at its starting tip, and image features from a frozen MobileNetV3-Small~\cite{howard2019searching}.
+An attention layer pools the patch, and a gated recurrent unit~\cite{cho2014learning} with 128 hidden units carries the history of the path.
+The outputs are a direction, a step length between 0.5 and 6~px, and one of four states: invalid start, continue, stop at the base, or lost.
+A start is dropped if its probability of being invalid at the first step is at least 0.6, a threshold chosen on the validation split.
+Finished paths are smoothed and resampled every 4~px, and duplicates and fragments are removed by overlap and embedding distance.
+The tracer has 194,463 parameters and was trained for 120,000 steps on the outputs of the frozen field network, with scheduled sampling~\cite{bengio2015scheduled}.
+
+\subsection*{Annotated data}
+
+We annotated two datasets in CVAT~\cite{cvat2026computer} and froze both before the runs reported here (Fig~\ref{fig:data}A and \ref{fig:data}B).
+The detection dataset has 7,978 images from laboratory tanks, field surveys and public web photographs, with 26,394 instance masks in 37 classes; 8,432 masks are sunflower sea stars.
+It is split by capture group into 5,600 training, 1,129 validation and 1,249 test images.
+The arm dataset has 5,093 crops of single animals, with 57,055 arm polylines drawn from base to tip and 6,346 landmark points.
+It is split by acquisition group into 4,062 training, 478 validation and 553 test crops.
+Of the test crops, 493 (180 groups) come from sources scored repeatedly during development, and we call them the development test set.
+The other 60 come from two newer camera rigs, StarDome and StarTrack, that were not.
+Animals recorded at Friday Harbor Laboratories came from its conservation breeding programme, whose broodstock collection, approval and husbandry are described in~\cite{hodin2025star}.
+
+\begin{figure}[!ht]
+\FIG{Fig3}{\linewidth}
+\caption{{\bf Annotated datasets and traces on test crops.}
+(A) Thirty images of the detection dataset with their annotated instance masks, coloured by four display groups. Headers give the number of images that contain each group, and the inventory gives the number of masks. The detector is trained on two classes.
+(B) Crops of the arm dataset with annotated arm polylines and landmark points, grouped by appearance: colour images, monochrome laboratory images, and three camera rigs (Sleepy Stars, 500 crops; StarDome, 100; StarTrack, 100). The six rig examples are Sleepy Stars crops.
+(C) Six test crops from the Sleepy Stars rig in three postures, with annotated arms (magenta) and arms from the published tracer (cyan; Noodle Tracer in the software). F1 is pooled over the 63 test crops of this rig (precision 0.905, recall 0.862).
+Examples in A and B come from all three splits. The plotting code was written with coding agents (see Methods).}
+\label{fig:data}
+\end{figure}
+
+\subsection*{Shortest-path decoder and scoring}
+
+As a baseline without training we decoded the same maps with a shortest-path search.
+Pixels of the support map form a graph, and the cost of a step rises with distance from the centreline, with movement against the predicted direction or progress, with turning, and with embedding distance from the tip.
+Dijkstra's algorithm~\cite{dijkstra1959note} finds the cheapest path from each tip, and tips are paired with predicted bases by Hungarian assignment~\cite{kuhn1955hungarian}.
+The cost weights were set by hand and not tuned.
+
+A traced arm and an annotated arm match when their symmetric Chamfer distance is at most 8~px in the 512~px crop.
+Pairs are taken closest first and each arm is used once (\nameref{S2_Fig}).
+The primary score is the group-macro F1: F1 is computed for each acquisition group of the development test set and averaged over groups, then over three training seeds.
+Eight contrasts between tracer configurations, declared before scoring, were each tested with a paired bootstrap of groups (2,000 draws)~\cite{efron1979bootstrap} and Holm adjustment~\cite{holm1979simple}.
+For the detector, predictions and annotated masks of sunflower sea stars match one to one at a mask intersection over union of at least 0.5.
+
+\subsection*{Arm identity and behavioural recordings}
+
+Within one animal, arms are linked from frame to frame by Hungarian assignment.
+The cost of a link is the mean distance between the two arm shapes, relative to the body centre, plus twice the distance between their mean embeddings.
+A link is accepted only below a fixed cost, and a track ends after 16 frames without a link.
+
+The righting set has 44 clips (63,716 frames at 2 frames per second) of 23 animals that were inverted in six sessions at 12, 14.5 or 17~$^{\circ}$C, by the protocol of~\cite{hodin2025star}.
+An observer labelled each frame as being flipped, upside down or right side up.
+We classified posture from 70 summary statistics of the dense maps with a logistic regression followed by a three-state hidden Markov model, fitted without the session being scored.
+The rest set comes from a rig that records one animal per camera at 1 frame per second (Sleepy Stars).
+An observer scored the state of each animal per minute, and we traced 300~s on each side of 96 changes from a quiescent to a still-alert state in 24 animals.
+Lengths are divided by the body radius $R_0$, the radius of a circle with the area of the arm-support map before the event.
+Changes at a transition compare medians 300 to 60~s before and 60 to 300~s after onset, with intervals from a bootstrap of animals (5,000 draws).
+
+\subsection*{Throughput tests, software and use of AI tools}
+
+We timed the whole pipeline on video streamed at 1 frame per second, assembled from 371 validation images of laboratory tanks, with about 2.8 animals per frame.
+These tests used an earlier one-class detector of the same architecture and size as the published one.
+Before them, two coding agents optimized the inference code in eleven rounds of timed runs, keeping only changes that were faster and left the outputs unchanged.
+
+The pipeline is a Python package built on PyTorch~\cite{paszke2019pytorch} and Ultralytics~\cite{jocher2026ultralytics}.
+Its code is at \url{https://github.com/weertman/DeepStarNoodles} (MIT licence), and the models and datasets are on Hugging Face.
+The coding agents Codex (OpenAI) and Claude Code (Anthropic; models Claude Opus 5.5 and Claude Fable 5.2 for the published work) wrote parts of the software, ran the optimization of inference speed, and prepared analysis scripts, figure scripts and a draft of this text.
+The authors checked the code, the results and the text.
+\nameref{S1_Text} lists the earlier models and the settings needed to repeat training and scoring.

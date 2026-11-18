@@ -1,0 +1,18 @@
+\section*{Discussion}
+
+DeepStarNoodles describes a sunflower sea star as one curve per arm, whatever the number of arms.
+On test crops with 3 to 22 arms it matched 80\% of annotated arms at a precision of 0.82, and matched arms lay a median of 2.7~px from the annotation.
+The learned tracer scored 5.0 points above a shortest-path search of the same maps, mostly through higher precision and closer placement of arm bases.
+The controls do not show which part of the tracer produces that gain: the largest measured contribution, 2.1 points, came from the removal of duplicate arms by embedding distance, a step applied after tracing.
+
+The results set four limits on use.
+First, the published detector found 92\% of animals in laboratory images but 67\% in field images apart from one cruise (interval 29\% to 88\%).
+Second, the tracer draws extra arms on animals with few arms (precision 0.605 for 3 to 7 arms), and the number of traced arms equalled the annotated number in one third of crops, so a count of arms from a single frame is unreliable.
+Third, the development test set was scored repeatedly while the method was built, the field network has no test score of its own, and the two rigs not scored during development are in our laboratory.
+Fourth, arm identities in video have no annotation, so we could measure their consistency but not their accuracy, and they did not carry through a flip.
+The behavioural examples are descriptive: both sets of recordings resemble the training images, the posture classifier was fitted to the righting clips, and 41 of the 96 rest transitions fell near a change of the lights, where movement changed most.
+
+At the measured throughput, a year of video from one camera takes about a week on one rented GPU.
+That makes continuous records of posture practical for animals in captive rearing.
+Field use needs more annotated field images.
+The design does not depend on the number of appendages and may suit other animals with many similar limbs, such as brittle stars and crinoids, which we have not tested.

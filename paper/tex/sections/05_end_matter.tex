@@ -1,0 +1,28 @@
+\section*{Supporting information}
+
+\paragraph*{S1 Text.}
+\label{S1_Text}
+{\bf Extended methods and results.} Datasets and splits; architectures, losses and training settings of the three models; decoding settings; detector results by domain and label scheme; tracer results for every trained configuration and contrast; the behavioural analyses; throughput by GPU type; file checksums of the published models; and known limits.
+
+\paragraph*{S1 Fig.}
+\label{S1_Fig}
+{\bf Labelling of other objects and detection of sunflower sea stars.} All models are YOLO26-L trained with one recipe on the same 5,600 training images and scored once on the 1,249 test images; dots are three seeds and bars their mean. The four label schemes differ only in how objects other than sunflower sea stars are labelled: F, each of 37 classes separately; C, four coarse classes; B, one class for all other objects; P, other objects left unlabelled. The figure divides the test images into five domains. Centred field photographs are PWS (Prince William Sound; 243 images) and 65 images from three other sources with 19 animals; field survey video and tanks outside the laboratory are shown separately. In the main text these domains are regrouped as PWS and field apart from PWS.
+(A) Training (solid) and test (tint) instance masks by domain and coarse class; labels give image counts.
+(B) Precision, recall and F1 for sunflower sea stars on the 941 test images outside the centred field photographs (1,151 animals).
+(C) Precision and recall by domain at a confidence of 0.25, matched one to one at a mask intersection over union of at least 0.5; n is the number of sunflower sea stars. In field survey video, schemes F, C and B made one to four predictions per model, so their precision of 1 rests on few predictions.
+(D) Training (filled) and test (open) masks for each annotated class, with the labels that each scheme trains on. A dash marks a class with no test examples.
+(E) Confusion matrix of scheme F on test images, pooled over seeds, as the percentage of each true class.
+(F) Percentage of the test objects of each class predicted as sunflower sea star under each scheme. For the sunflower sea star row this is recall; for other rows it is false detections. Blank cells are below 0.5\%. The bottom row counts predictions that matched no annotated object, summed over seeds. The plotting code was written with coding agents (see Methods).
+
+\paragraph*{S2 Fig.}
+\label{S2_Fig}
+{\bf How arm F1 is computed, and how close traced arms lie to annotated arms.} Steps 1 to 3 use one test image. Distances are in pixels of the 512 $\times$ 512 crop.
+(1) The distance between a traced arm and an annotated arm is the symmetric Chamfer distance: the mean distance from each point to the nearest point of the other line, taken both ways. Thin white lines show these gaps. Pair i is 2.4~px apart and matches; pair ii is 9.7~px apart and does not.
+(2) Pairs are taken closest first and each arm is used once. Traced arms with a partner are matched (TP), traced arms without one are extra (FP), and annotated arms without one are missed (FN).
+(3) F1 for this image.
+Bottom row: the published tracer (seed 0) on all 553 test crops, with arms pooled over images. Left, the arm of the example animal whose distance is closest to the median of all matched arms. Middle, the distance of each of the 4,534 matched arms. Right, pooled counts and F1. The plotting code was written with coding agents (see Methods).
+
+\section*{Acknowledgments}
+
+\gap{People and facilities to thank; sources of contributed photographs and survey video.}
+The field network uses the DINOv3 ConvNeXt-Base backbone and weights (Meta Platforms, Inc.), released under the DINOv3 License Agreement~\cite{simeoni2025dinov3}.

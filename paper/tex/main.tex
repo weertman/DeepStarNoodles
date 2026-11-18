@@ -1,0 +1,140 @@
+% DeepStarNoodles manuscript for PLOS Computational Biology (Research Article).
+% Preamble: PLOS LaTeX template v3.8 (Apr 2026), lines 76-163 of
+% ../style/plos_latex_template_v3.8.tex, copied unchanged except that double spacing is
+% switched on. No template package may be removed. Macros go only in the macros section.
+% The source is split into sections/*.tex. Build with ../build.sh.
+% Section order: Introduction, Materials and methods, Results, Discussion.
+
+\documentclass[10pt,letterpaper]{article}
+\usepackage[top=0.85in,left=2.75in,footskip=0.75in]{geometry}
+
+% amsmath and amssymb packages, useful for mathematical formulas and symbols
+\usepackage{amsmath,amssymb}
+
+% Use adjustwidth environment to exceed column width (see example table in text)
+\usepackage{changepage}
+
+% textcomp package and marvosym package for additional characters
+\usepackage{textcomp,marvosym}
+
+% cite package, to clean up citations in the main text. Do not remove.
+\usepackage{cite}
+
+% Use nameref to cite supporting information files (see Supporting Information section for more info)
+\usepackage{nameref,hyperref}
+
+% line numbers
+\usepackage[right]{lineno}
+
+% ligatures disabled
+\usepackage[nopatch=eqnum]{microtype}
+\DisableLigatures[f]{encoding = *, family = * }
+
+% color can be used to apply background shading to table cells only
+\usepackage[table]{xcolor}
+
+% array package and thick rules for tables
+\usepackage{array}
+
+% create "+" rule type for thick vertical lines
+\newcolumntype{+}{!{\vrule width 2pt}}
+
+% create \thickcline for thick horizontal lines of variable length
+\newlength\savedwidth
+\newcommand\thickcline[1]{%
+  \noalign{\global\savedwidth\arrayrulewidth\global\arrayrulewidth 2pt}%
+  \cline{#1}%
+  \noalign{\vskip\arrayrulewidth}%
+  \noalign{\global\arrayrulewidth\savedwidth}%
+}
+
+% \thickhline command for thick horizontal lines that span the table
+\newcommand\thickhline{\noalign{\global\savedwidth\arrayrulewidth\global\arrayrulewidth 2pt}%
+\hline
+\noalign{\global\arrayrulewidth\savedwidth}}
+
+
+% Remove comment for double spacing
+% (enabled: PLOS Computational Biology requires double-spaced text)
+\usepackage{setspace}
+\doublespacing
+
+% Text layout
+\raggedright
+\setlength{\parindent}{0.5cm}
+\textwidth 5.25in
+\textheight 8.75in
+
+% Bold the 'Figure #' in the caption and separate it from the title/caption with a period
+% Captions will be left justified
+\usepackage[aboveskip=1pt,labelfont=bf,labelsep=period,justification=raggedright,singlelinecheck=off]{caption}
+\renewcommand{\figurename}{Fig}
+
+% Please use the included `plos2025.bst` as your BibTeX style
+\bibliographystyle{plos2025}
+
+% Remove brackets from numbering in List of References
+\makeatletter
+\renewcommand{\@biblabel}[1]{\quad#1.}
+\makeatother
+
+
+
+% Header and Footer with logo
+\usepackage{lastpage,fancyhdr,graphicx}
+\usepackage{epstopdf}
+%\pagestyle{myheadings}
+\pagestyle{fancy}
+\fancyhf{}
+%\setlength{\headheight}{27.023pt}
+%\lhead{\includegraphics[width=2.0in]{PLOS-submission.eps}}
+\rfoot{\thepage/\pageref{LastPage}}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrule}{\hrule height 2pt \vspace{2mm}}
+\fancyheadoffset[L]{2.25in}
+\fancyfootoffset[L]{2.25in}
+\lfoot{\today}
+
+%% Include all user-defined macros below
+
+% Draft-only inline figures. PLOS takes figures as separate files (Fig1.tif, ...) and wants
+% no graphics in the manuscript, but co-authors need them inline in the draft.
+% \FIG{file}{width} includes ../figures/<file>.pdf (path relative to tex/, i.e. the
+% workspace's figures/ directory) when \ifdraftfigs is true and prints nothing otherwise.
+\newif\ifdraftfigs
+\draftfigstrue
+\newcommand{\FIG}[2]{\ifdraftfigs\IfFileExists{../figures/#1.pdf}{\includegraphics[width=#2]{../figures/#1.pdf}}{\fbox{\texttt{missing figure file: \detokenize{#1}.pdf}}}\fi}
+
+% Reading copy only: a figure with its image may take the top of a page or a page of its own
+% near its first citation. Without images (--no-figs) the caption stays where it is written.
+\makeatletter
+\AtBeginDocument{\ifdraftfigs\let\dsn@figure\figure\renewcommand{\figure}[1][]{\dsn@figure[!tbp]}\fi}
+\makeatother
+
+% Visible placeholder for a fact the authors must supply (no colour: template rule).
+% Every \gap must be resolved before submission.
+\newcommand{\gap}[1]{\textbf{[GAP: #1]}}
+
+%% END MACROS SECTION
+
+
+\begin{document}
+\vspace*{0.2in}
+
+\input{sections/00_front}
+
+\clearpage
+\newgeometry{top=0.85in,left=1in,right=1in,footskip=0.75in}
+\linenumbers
+
+\input{sections/01_introduction}
+\input{sections/02_methods}
+\input{sections/03_results}
+\input{sections/04_discussion}
+\input{sections/05_end_matter}
+
+\nolinenumbers
+
+\bibliography{references}
+
+\end{document}

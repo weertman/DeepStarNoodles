@@ -22,7 +22,7 @@ extra_gated_fields:
 
 Trained models of [DeepStarNoodles](https://github.com/weertman/DeepStarNoodles), which traces every arm of a sunflower sea star (*Pycnopodia helianthoides*) as a curve from base to tip. A detector finds the animals, a field network (Hydra) predicts 18 dense maps for each crop, and a recurrent tracer (Noodle Tracer) walks each arm from tip to base.
 
-All models were trained with seed 0 on the frozen datasets: the detection dataset `starseg_yolo26_20261106` (frozen 2026-11-07; the repository [weertman/starseg](https://huggingface.co/datasets/weertman/starseg) currently holds an earlier version of it) and the [arm dataset](https://huggingface.co/datasets/weertman/deepstarnoodles-data) `noodles_final_20261026` (frozen 2026-10-26).
+All models were trained with seed 0 on the frozen datasets: the [detection dataset](https://huggingface.co/datasets/weertman/starseg) `starseg_yolo26_20261106` (frozen 2026-11-07) and the [arm dataset](https://huggingface.co/datasets/weertman/deepstarnoodles-data) `noodles_final_20261026` (frozen 2026-10-26).
 
 ## Files
 

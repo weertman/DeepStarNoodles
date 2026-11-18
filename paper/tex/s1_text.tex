@@ -1,0 +1,141 @@
+% S1 Text (extended methods) for the DeepStarNoodles manuscript, PLOS Computational Biology.
+% Same preamble as main.tex (PLOS LaTeX template v3.8, double spacing on); keep the two in
+% step (../build.sh compares them). Supporting information is published as supplied, as a
+% PDF, so this file is built with its figures inline.
+
+\documentclass[10pt,letterpaper]{article}
+\usepackage[top=0.85in,left=2.75in,footskip=0.75in]{geometry}
+
+% amsmath and amssymb packages, useful for mathematical formulas and symbols
+\usepackage{amsmath,amssymb}
+
+% Use adjustwidth environment to exceed column width (see example table in text)
+\usepackage{changepage}
+
+% textcomp package and marvosym package for additional characters
+\usepackage{textcomp,marvosym}
+
+% cite package, to clean up citations in the main text. Do not remove.
+\usepackage{cite}
+
+% Use nameref to cite supporting information files (see Supporting Information section for more info)
+\usepackage{nameref,hyperref}
+
+% line numbers
+\usepackage[right]{lineno}
+
+% ligatures disabled
+\usepackage[nopatch=eqnum]{microtype}
+\DisableLigatures[f]{encoding = *, family = * }
+
+% color can be used to apply background shading to table cells only
+\usepackage[table]{xcolor}
+
+% array package and thick rules for tables
+\usepackage{array}
+
+% create "+" rule type for thick vertical lines
+\newcolumntype{+}{!{\vrule width 2pt}}
+
+% create \thickcline for thick horizontal lines of variable length
+\newlength\savedwidth
+\newcommand\thickcline[1]{%
+  \noalign{\global\savedwidth\arrayrulewidth\global\arrayrulewidth 2pt}%
+  \cline{#1}%
+  \noalign{\vskip\arrayrulewidth}%
+  \noalign{\global\arrayrulewidth\savedwidth}%
+}
+
+% \thickhline command for thick horizontal lines that span the table
+\newcommand\thickhline{\noalign{\global\savedwidth\arrayrulewidth\global\arrayrulewidth 2pt}%
+\hline
+\noalign{\global\arrayrulewidth\savedwidth}}
+
+
+% Remove comment for double spacing
+% (enabled: PLOS Computational Biology requires double-spaced text)
+\usepackage{setspace}
+\doublespacing
+
+% Text layout
+\raggedright
+\setlength{\parindent}{0.5cm}
+\textwidth 5.25in
+\textheight 8.75in
+
+% Bold the 'Figure #' in the caption and separate it from the title/caption with a period
+% Captions will be left justified
+\usepackage[aboveskip=1pt,labelfont=bf,labelsep=period,justification=raggedright,singlelinecheck=off]{caption}
+\renewcommand{\figurename}{Fig}
+
+% Please use the included `plos2025.bst` as your BibTeX style
+\bibliographystyle{plos2025}
+
+% Remove brackets from numbering in List of References
+\makeatletter
+\renewcommand{\@biblabel}[1]{\quad#1.}
+\makeatother
+
+
+
+% Header and Footer with logo
+\usepackage{lastpage,fancyhdr,graphicx}
+\usepackage{epstopdf}
+%\pagestyle{myheadings}
+\pagestyle{fancy}
+\fancyhf{}
+%\setlength{\headheight}{27.023pt}
+%\lhead{\includegraphics[width=2.0in]{PLOS-submission.eps}}
+\rfoot{\thepage/\pageref{LastPage}}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrule}{\hrule height 2pt \vspace{2mm}}
+\fancyheadoffset[L]{2.25in}
+\fancyfootoffset[L]{2.25in}
+\lfoot{\today}
+
+%% Include all user-defined macros below
+
+% Draft-only inline figures. PLOS takes figures as separate files (Fig1.tif, ...) and wants
+% no graphics in the manuscript, but co-authors need them inline in the draft.
+% \FIG{file}{width} includes ../figures/<file>.pdf (path relative to tex/, i.e. the
+% workspace's figures/ directory) when \ifdraftfigs is true and prints nothing otherwise.
+\newif\ifdraftfigs
+\draftfigstrue
+\newcommand{\FIG}[2]{\ifdraftfigs\IfFileExists{../figures/#1.pdf}{\includegraphics[width=#2]{../figures/#1.pdf}}{\fbox{\texttt{missing figure file: \detokenize{#1}.pdf}}}\fi}
+
+% Visible placeholder for a fact the authors must supply (no colour: template rule).
+% Every \gap must be resolved before submission.
+\newcommand{\gap}[1]{\textbf{[GAP: #1]}}
+
+% Numbering inside S1 Text: "Fig A", "Table A", "Eq (A)".
+% PLOS asks that items inside a supporting file be cited from the main text as
+% "Fig A in S1 Text" / "Table A in S1 Text", never "S1 Fig in S1 Text" (see
+\renewcommand{\thefigure}{\Alph{figure}}
+\renewcommand{\thetable}{\Alph{table}}
+\renewcommand{\theequation}{\Alph{equation}}
+
+%% END MACROS SECTION
+
+
+\begin{document}
+\newgeometry{top=0.85in,left=1in,right=1in,footskip=0.75in}
+
+\begin{flushleft}
+{\Large
+\textbf{S1 Text. Extended methods and results}
+}
+\newline
+\\
+DeepStarNoodles: A deep-learning pipeline for high-throughput behavioral analysis of sunflower stars
+\\
+\bigskip
+Willem Weertman, Dalton Blackwell, Chloe Schwab, Julia Knopf, Tess Chapman, Pema Kitaeff, Brooke Ashcraft, Rebecca Guenther, Jason Hodin
+\end{flushleft}
+
+\input{sections/s1_part1}
+\input{sections/s1_part2_applications}
+\input{sections/s1_part3}
+
+\bibliography{references}
+
+\end{document}

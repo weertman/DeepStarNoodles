@@ -20,3 +20,6 @@ RUNS/
 .DS_Store
 .idea/
 .vscode/
+
+# Manuscript build output
+paper/build/

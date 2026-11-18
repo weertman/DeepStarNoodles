@@ -1,0 +1,159 @@
+% S1 Text, part 2: behavioural recordings (righting, rest transitions, arm identity). Table J.
+
+\section*{Behavioural recordings}
+
+Both sets of recordings were processed with the three published models, on the frames as recorded.
+The detector ran at a confidence of 0.25 and the tracer at the invalid-seed threshold of 0.6.
+All measures are projections onto the image plane.
+
+\subsection*{Animals}
+
+The animals recorded at Friday Harbor Laboratories come from the conservation breeding programme for the species there~\cite{hodin2021progress,hodin2025star}.
+Hodin et al.~\cite{hodin2025star} describe the broodstock and the husbandry.
+The adults were collected at intertidal and subtidal sites in and around San Juan Island, Washington, in spring and summer 2019.
+The director of the laboratories approved the collections under Washington state statute, with the laboratories as managing agency.
+Adults are held in aquaria with flowing natural sea water and are fed mainly mussels.
+
+\subsection*{Body origin, body radius and measures}
+
+The body origin of a frame is the strongest peak of the mouth map.
+If the mouth map has no peak above 0.15, the origin is the centroid of the arm-support map above 0.3.
+The body radius is the radius of a circle with the area of the arm-support map above 0.5.
+$R_0$ is its median over a reference window: the frames before the flip in the righting set, and the baseline window in the rest set.
+Lengths are divided by $R_0$.
+
+Seven measures are computed for each frame from the traced arms and the arm-support map.
+\begin{itemize}
+\item Arm-tip motion: the median over arms of the distance moved by the arm tip between consecutive frames, relative to the body origin, per second.
+\item Arm deformation: each arm is resampled along its length, and its shape in the previous frame is aligned to its shape in the current frame by the best rotation and translation. The measure is the median over arms of the root-mean-square residual, per second.
+\item Body speed: the distance moved by the centroid of the arm-support map between consecutive frames, per second.
+\item Arm-support area: the area of the arm-support map above 0.5, relative to its median in the reference window.
+\item Fold asymmetry: the distance from the body origin to the centroid of the arm tips.
+\item Arm-length spread: the interquartile range of the arm lengths, for frames with at least four arms.
+\item Arm curvature: the median over arms of the summed turning angle divided by the arm length.
+\end{itemize}
+Measures that compare consecutive frames use the arm identities of the tracker described above.
+The side index of the righting figure is the peak probability of the anus map minus that of the mouth map.
+
+\subsection*{Righting after inversion}
+
+The righting set has 44 clips of 23 animals in six sessions, recorded at 2 frames per second (63,716 frames).
+An observer labelled each frame as right side up, being flipped or upside down.
+The clips were recorded with the flipping protocol of Hodin et al.~\cite{hodin2025star} (their Experiment~6).
+In that protocol the animals are juveniles seven to eight months after settlement.
+A juvenile sits in a Petri dish in a water bath at the test temperature.
+It is turned oral side up with a plastic spatula and turned again each time it has righted itself, for 10~min.
+A USB camera (Basler a2A2600-64ucPRO) records the dish at 2 frames per second.
+Each group of animals is tested at 12~$^{\circ}$C and again about a week later at its test temperature.
+The published detector found the traced animal in 58,704 frames and found no animal in 5,012 (7.9\%).
+It returned more than one detection in 874 frames.
+The tracer returned 440,730 arms.
+
+The posture classifier was fitted for this analysis and is not a published model.
+For each frame it takes 70 numbers: seven summary statistics (sum, mean, standard deviation, fraction above zero, the two coordinates of the centroid, and radial spread) of each of 10 maps of the field network (arm support, centreline, the two direction maps, progress, mouth, madreporite, anus, arm bases and arm tips).
+The features of a time point are these 70 numbers, and their mean and standard deviation over the 11 frames (5.5~s) centred on it, 210 in all.
+A multinomial logistic regression (regularization constant 1, balanced class weights) gives posture probabilities.
+It is fitted on at most 3,000 time points, balanced by posture, session and clip.
+A hidden Markov model with three states, decoded with the Viterbi algorithm, turns them into a posture sequence.
+Its transition matrix is counted from the observer's labels in the clips used for fitting.
+There are six folds, one per session.
+Each fold scores one session and is fitted on four others; the sixth session is left unused, a rule kept from the first version of the analysis.
+The fit was repeated with three seeds (20260806 to 20260808), and scores are means with the standard deviation over seeds.
+
+A time point is scored only if the animal was detected in every frame from 29.5~s before it to 15~s after it.
+This rule also dates from the first version of the analysis, and it leaves 19,497 scored time points (14,985 upside down, 2,916 right side up and 1,596 being flipped).
+A flip episode is an interval labelled as being flipped; episodes from the classifier and the observer are matched one to one within a tolerance of five time points, and the episode F1 is the mean over clips.
+The macro-F1 is the mean of the F1 of the three postures over all time points.
+The episode F1 was 0.990 (0.004) and the macro-F1 was 0.857 (0.002).
+The F1 by posture was 0.825 for right side up, 0.781 for being flipped and 0.965 for upside down.
+Without the hidden Markov model the episode F1 was 0.864 and the macro-F1 was 0.840.
+We also ran a looser rule that needs detections only in the 11 frames around the time point.
+It scores 27,636 time points and 506 observer bouts, with an episode F1 of 0.940 (0.003) and a macro-F1 of 0.859 (0.004).
+The figures and the main text use the first rule.
+
+Righting time runs from the first upside-down time point after a flip to the first right-side-up time point.
+The observer's labels give 280 bouts (median 29~s, interquartile range 21 to 39~s, range 8 to 122~s).
+The classifier gives 275 bouts (median 27~s), of which 273 match an observer bout.
+Over matched bouts the mean absolute difference was 2.37~s.
+The mean difference, classifier minus observer, was $-1.44$~s (95\% CI $-2.11$ to $-0.82$; bootstrap of animals, 10,000 draws).
+
+For the aligned bouts of the figure we took four clips per session and, in each, the complete bout with a righting time nearest 30~s (24 bouts, 2,100 frames, righting times of 26 to 39~s).
+The choice used the observer's labels and the detections alone.
+Medians of the measures before the flip, while being flipped and while upside down were: side index 0.73, $-0.74$ and $-0.81$; arm deformation 0.026, 0.107 and 0.039~$R_0$ per second; fold asymmetry 0.127, 0.163 and 0.228~$R_0$; arm-length spread 0.298, 0.405 and 0.412~$R_0$; arm curvature 0.159, 0.192 and 0.315~rad per $R_0$; arm-support area 1.00, 0.98 and 0.93.
+
+\subsection*{Change from quiescent to still alert}
+
+The rest set comes from the Sleepy Stars rig, which records one animal per camera at 1 frame per second.
+An observer scored the state of each animal for every minute of recording.
+We took the 96 changes from quiescent to still alert in 24 animals of 8 trials, and traced the 300~s before and after each one.
+The 192 video segments hold 57,600 frames.
+The detector found the animal in 57,531 of them, and the tracer returned 588,208 arms (median 10 per frame).
+When a frame had several detections, we kept those with a mask centre inside the tank of the animal, and of these the one nearest the running median position.
+Ninety-four of the 96 windows have at least 595 of their 601 frames traced.
+
+For each transition and measure, the change is the median from 60 to 300~s after the onset divided by the median from 300 to 60~s before it, minus one.
+We report the median change over transitions, with a 95\% percentile interval from 5,000 bootstrap draws of animals (Table~\ref{tab:restchange}).
+When trials are drawn in place of animals, the interval for arm-tip motion is 29\% to 86\%.
+The onsets have a resolution of 1~min, which is why the minute next to the onset is excluded from both windows.
+
+The lights of the rig switch on a schedule.
+Forty-one transitions (23 animals) began between 5~min before and 10~min after a switch, 10 of them near lights-off, and 55 (22 animals) began at other times.
+Changes in the three measures of movement were several times larger in the first stratum.
+We did not test whether the difference comes from the light itself.
+
+\begin{table}[!ht]
+\begin{adjustwidth}{-2.25in}{0in}
+\centering
+\caption{{\bf Change of seven measures from before to after the onset of the still-alert state.}}
+\begin{tabular}{|l|r|r|r|r|}
+\hline
+{\bf Measure} & {\bf All (96)} & {\bf Near a light switch (41)} & {\bf Away from a switch (55)} & {\bf Rose}\\ \thickhline
+Arm-tip motion & 63 (32 to 95) & 144 (80 to 224) & 29 (9 to 44) & 85\\ \hline
+Arm deformation & 42 (26 to 79) & 163 (95 to 216) & 18 (10 to 34) & 80\\ \hline
+Body speed & 41 (31 to 65) & 447 (122 to 583) & 19 (4 to 32) & 80\\ \hline
+Arm-support area & 7 (3 to 12) & 17 (10 to 23) & 3 (1 to 7) & 72\\ \hline
+Fold asymmetry & 17 (6 to 24) & 13 ($-14$ to 36) & 19 (8 to 24) & 65\\ \hline
+Arm-length spread & 14 (8 to 24) & 31 (14 to 49) & 4 ($-4$ to 17) & 68\\ \hline
+Arm curvature & 4 (0.1 to 12.6) & 13 (3 to 28) & 1 ($-3$ to 6) & 60\\ \hline
+\end{tabular}
+\begin{flushleft}\small
+Median change in per cent, with the 95\% interval from a bootstrap of animals.
+Numbers of transitions are in the column heads.
+Rose: percentage of the 96 transitions in which the measure was higher after the onset.
+\end{flushleft}
+\label{tab:restchange}
+\end{adjustwidth}
+\end{table}
+
+Twenty onsets happened on the floor of the tank and 76 on a wall, 44 of them on the sloped wall at one end.
+The shading of the tank map in the figure is the one input that does not come from the published models.
+It uses the detections that the recording software saved at capture time, with an earlier detector: 4,498,591 frames of 27 animals, 98.1\% of them with a detection.
+In those detections the animals spent a mean of 27.7\% of the time on the floor.
+
+The example animal of the figure was chosen for the first version of the figure, by a rule that asked for arms spread evenly around the body.
+With the published models it no longer meets that rule, and the rule would pick another transition.
+We kept the animal so that the figure shows the same event as before.
+
+\subsection*{Arm identity}
+
+The tracker settings were those of the inference package: a shape gate of 120~px, an embedding weight of 2, a cost cap of 90, and a track life of 16 frames without a link.
+A jump is a change of more than 30$^{\circ}$ in the angle of the arm tip about the body origin between two linked frames.
+Arm identities have no annotation.
+The measures below show whether the links are consistent, not whether they are correct.
+
+In the rest set (96 sequences, 57,524 frames, 588,124 arms, 16.0~h), 94.4\% of arms were linked to the previous frame.
+Of these links, 95.5\% were also made when the tracker read the video backwards.
+There were 1.5 jumps per 1,000 links, and 4.2 without the cost cap.
+The median life of an identity was 561~s, and an arm changed identity 3.2 times per 10~min.
+Of all arms, 97.9\% belonged to an identity that lasted at least 60~s and 75.4\% to one that lasted at least 300~s.
+By state, jumps per 1,000 links were 1.1 when quiescent, 1.6 when still alert and 2.6 when moving.
+
+In the righting set (44 clips, 58,704 frames, 440,730 arms, 8.5~h), 96.7\% of arms were linked and 96.3\% of the links were made in reverse.
+There were 12.6 jumps per 1,000 links, and 17.3 without the cost cap.
+The median life of an identity was 176~s, and an arm changed identity 7.5 times per 10~min.
+Of all arms, 89.4\% belonged to an identity that lasted at least 60~s and 22.4\% to one that lasted at least 300~s.
+Jumps per 1,000 links were 3.7 right side up, 95.4 while being flipped and 4.3 upside down.
+While the animal was being flipped, 89.7\% of arms were linked and 83.4\% of the links were made in reverse.
+
+When the tracker read every second, fourth, eighth or sixteenth frame of the rest set (2 to 16~s between frames), it kept 97.1\%, 94.9\%, 91.9\% and 87.4\% of the links.
+For the righting set (1 to 8~s between frames) the values were 96.5\%, 93.0\%, 86.5\% and 73.4\%.

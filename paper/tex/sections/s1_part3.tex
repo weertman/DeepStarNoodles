@@ -1,0 +1,173 @@
+% S1 Text, part 3: inference package and throughput, published models, limits of the evidence.
+
+\section*{Inference package and throughput}
+
+\subsection*{Package}
+
+The three models run together in the Python package \texttt{deepstarnoodles-inference}, version 0.5.0.dev12, for Python 3.11 or later.
+It depends on PyTorch 2.6 to 2.8~\cite{paszke2019pytorch}, torchvision 0.21 to 0.23, OpenCV 4.11 or later~\cite{bradski2000opencv}, Ultralytics 8.4.51 and lap 0.5.13.
+For each frame the package runs the detector, cuts one crop per sunflower sea star, runs the field network and the tracer on the crops, and writes the arms in frame coordinates.
+
+All speed tests in this section used an earlier detector, not the published one.
+The earlier detector has the same architecture and size (31,373,407 parameters) but was trained with the one-class label scheme P.
+Its test recall was 0.758, against 0.903 for the published two-class detector.
+Throughput depends on the number of stars found per frame, so the rates below will change with the published detector.
+The field network and the tracer in the speed tests were the published ones.
+
+\subsection*{Optimization of the pipeline}
+
+We optimized the speed of the pipeline on rented RTX 5090 pods.
+The benchmark runs the pipeline on a fixed archive of 256 images and reports images per second.
+There were 150 timed runs in eleven rounds.
+Of these, 40 changed the outputs and 10 exceeded a preset limit on GPU memory.
+On the pod of the last round the original pipeline ran at 3.5 images/s (3.46).
+The configuration we kept ran at 52.2 images/s (recorded as 52.25 and 52.21), a factor of 15.
+The rounds ran on different pods, so a comparison across rounds mixes optimization with the speed of the host.
+Gains measured within one pod are therefore the better estimate of each step.
+
+Two coding agents ran the rounds.
+Rounds 1 to 4 were run by Codex, with a paired gain within one pod of a factor of 1.31.
+Rounds 5 to 11 were run by Claude Code, with paired gains of 2.13, 2.48, 1.65 and 1.20, which multiply to 10.4.
+For the published models, analyses and text, Claude Code ran the models Claude Opus 5.5 and Claude Fable 5.2.
+Earlier development used earlier models from Anthropic and OpenAI, going back to Claude Opus 4 and GPT-5.
+\gap{exact versions of the earlier models and of Codex, dates of use, and how the authors checked the agents' changes}
+The configurations kept from round 5 onwards gave the same predictions as the configuration selected in round 4, byte for byte.
+
+The streamed-video test below adds compilation of the field network and of the tracer step, and stores the field network weights at 16-bit precision.
+This changes the arithmetic slightly.
+On the 478 validation crops, pooled F1 with no invalid-seed threshold was 0.8033 with compilation and 0.8034 without, and 7 images changed their match counts.
+The tracer code fails at 16-bit precision, so all accuracy results in this text were computed at 32-bit precision.
+
+\subsection*{Streamed video on nine GPU types}
+
+We measured sustained throughput on video streamed at 1~frame/s (Table~\ref{tab:gpus}).
+The video was synthetic.
+Twelve videos of 30 minutes were built from 371 laboratory images of the validation split of the detection dataset, with each image held for 5~s.
+A frame held about 2.8 sunflower sea stars on average.
+One pod was rented per GPU type, and several pipeline processes shared the GPU through the CUDA Multi-Process Service.
+Each pod ran two sessions of 14 minutes with different numbers of processes.
+We measured a 10-minute window that started 4 minutes into each session and report the faster session.
+The package version was 0.5.0.dev10.
+Eight GPU types ran on 31 October 2026 and the RTX 5090 on 8 November 2026, with the same models and settings.
+Prices are the list prices of the provider (RunPod) on the test dates.
+No GPU type was repeated on a second pod.
+
+The RTX 5090 processed 58.10 frames/s at the lowest cost, USD 179.41 for one camera-year.
+A camera-year is one year of video at 1~frame/s, or 31,536,000 frames.
+The RTX PRO 6000 Blackwell was fastest (67.38 frames/s; 5.42 days per camera-year) at the highest cost.
+Outputs were not identical across GPU families.
+Between 98.4\% and 98.5\% of arms agreed within 2~px, and 99.7\% to 99.8\% of frames had the same number of stars.
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{Throughput on streamed video at 1 frame/s, by GPU type.} Rows are ordered by cost per camera-year.}
+\label{tab:gpus}
+{\small
+\begin{tabular}{|l|r|r|r|r|r|r|}
+\hline
+ & & \textbf{Price} & & \textbf{Star} & \textbf{USD per} & \textbf{Days per} \\
+\textbf{GPU} & \textbf{Processes} & \textbf{(USD/h)} & \textbf{Frames/s} & \textbf{crops/s} & \textbf{camera-year} & \textbf{camera-year} \\ \thickhline
+RTX 5090 & 12 & 1.19 & 58.10 & 163.2 & 179.41 & 6.28 \\ \hline
+RTX 4090 & 8 & 0.89 & 41.06 & 115.2 & 189.88 & 8.89 \\ \hline
+RTX 3090 & 8 & 0.50 & 20.94 & 58.9 & 209.22 & 17.43 \\ \hline
+RTX PRO 4500 Blackwell & 6 & 0.72 & 27.55 & 77.4 & 228.92 & 13.25 \\ \hline
+RTX A6000 & 8 & 0.59 & 22.17 & 62.2 & 233.13 & 16.46 \\ \hline
+L40S & 8 & 1.09 & 40.61 & 113.3 & 235.12 & 8.99 \\ \hline
+RTX 6000 Ada & 8 & 0.99 & 36.38 & 101.2 & 238.37 & 10.03 \\ \hline
+A40 & 8 & 0.59 & 19.26 & 54.8 & 268.35 & 18.95 \\ \hline
+RTX PRO 6000 Blackwell & 10 & 2.49 & 67.38 & 188.3 & 323.71 & 5.42 \\ \hline
+\end{tabular}
+}
+\begin{flushleft}\small
+A camera-year is 31,536,000 frames.
+Days per camera-year are for one pod.
+The detector in this test was the earlier one-class detector, not the published one.
+\end{flushleft}
+\end{table}
+
+\subsection*{Decoder time per image}
+
+We timed the two decoders on the 493 crops of the development test set, one crop per call, with the maps of the published field network.
+The time of the field network is excluded.
+The shortest-path decoder ran on a CPU (Intel Xeon W-3365, four numerical threads) and took a median of 405.3~ms per crop (interquartile range 280.4 to 801.5~ms; one pass).
+The tracer ran on a GPU (NVIDIA RTX A6000, shared with one light process).
+The reference decoder, which produced the accuracy results, took a median of 74.2~ms per crop (67.7 to 86.8~ms).
+The optimized decoder of the package (version 0.5.0.dev12), which uses CUDA graphs, took 18.4~ms (16.8 to 20.6~ms).
+Tracer times are medians of three passes.
+All three decoders gave the match counts of the accuracy readout on every image.
+The ratios of the medians are 22.0 (shortest path to optimized tracer), 5.5 (shortest path to reference tracer) and 4.0 (reference to optimized tracer).
+The hardware is not like for like, because one decoder ran on a CPU and the other on a GPU.
+
+\section*{Published models}
+
+Table~\ref{tab:checksums} lists the published model files.
+All are seed 0 of the campaign described in this text.
+The detector of the main text is \texttt{starseg\_binary.pt} (label scheme B).
+The two other detectors are the size-L models of label schemes F and C; they also detect the other classes, and with any of them only sunflower sea star detections are cropped and traced.
+The code is at \url{https://github.com/weertman/DeepStarNoodles} under the MIT licence.
+The model files are in a Hugging Face repository with gated access, \url{https://huggingface.co/weertman/deepstarnoodles}, also under the MIT licence, and are assets of the release \texttt{models-20261117} of \url{https://github.com/weertman/deepstarnoodles-inference}, which needs no login.
+The manifests of that release pair each detector with the field network and the tracer and set the invalid-seed threshold of 0.6, which the inference package applies from version 0.5.0.dev14.
+The arm dataset (version \texttt{noodles\_final\_20261026}) is at \url{https://huggingface.co/datasets/weertman/deepstarnoodles-data} and the detection dataset (version \texttt{starseg\_yolo26\_20261106}) at \url{https://huggingface.co/datasets/weertman/starseg}.
+Access to both datasets is also gated, and requests are recorded, because the species is listed; the images and annotations are licensed CC BY 4.0.
+The DINOv3 backbone keeps Meta's DINOv3 License, and Ultralytics is under AGPL-3.0.
+The repositories are public and will be kept at these addresses.
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{Published model files.}}
+\label{tab:checksums}
+{\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{|l|>{\raggedright\arraybackslash}p{1.65in}|r|r|>{\raggedright\arraybackslash}p{2.3in}|}
+\hline
+\textbf{File} & \textbf{Role} & \textbf{Parameters} & \textbf{Bytes} & \textbf{SHA-256} \\ \thickhline
+\texttt{starseg\_binary.pt} & Detector: YOLO26-L segmentation, label scheme B (2 classes) & 31,375,206 & 63,525,766 & \texttt{1a38e2dab1a3e6937297e397fc7778f0\allowbreak 5746a8db2b64b851b561d6379d1f2592} \\ \hline
+\texttt{starseg\_fine.pt} & Detector: as above, label scheme F (37 classes) & 31,438,171 & 63,650,270 & \texttt{d46917b7a5e8eaecf337c2ddbd0e128a\allowbreak a2b24d54a6b6a98392118a44b5254699} \\ \hline
+\texttt{starseg\_coarse.pt} & Detector: as above, label scheme C (4 classes) & 31,378,804 & 63,534,342 & \texttt{5a268a704e677d463221a2c262c8ae1f\allowbreak 43ed4db401dd7a68fb93f6988a34323c} \\ \hline
+\texttt{hydra.pt} & Field network: 18 output maps; moving-average weights & 90,883,602 & 727,321,088 & \texttt{aa056f933c1a0994fb299203aa20423c\allowbreak 5208637d2eb4ede7e942abcc3aa91d7c} \\ \hline
+\texttt{tracer.pt} & Tracer: hidden width 128; used with an invalid-seed threshold of 0.6 & 194,463 & 2,326,160 & \texttt{e6c1506067fc5864ab1d0d648dec2f79\allowbreak 32632017d952753cb68f80fed2c4812f} \\ \hline
+\end{tabular}
+}
+\begin{flushleft}\small
+File names are those of the release.
+Each detector file is the terminal checkpoint of its run with the absolute paths of the training machines replaced by relative ones; every weight tensor is identical to the file as trained (SHA-256 of the binary detector as trained \texttt{e48c5ce4c0ca9f9617e0856a2d3bdac1\allowbreak 7a4326bd463d5df4775c650f85bee0ba}).
+The tracer count includes 10,488 frozen parameters of the image encoder.
+\end{flushleft}
+\end{table}
+
+Our code is released under the MIT licence.
+The backbone code and weights of the field network fall under the DINOv3 License Agreement~\cite{simeoni2025dinov3}.
+The Ultralytics runtime for the detector and its BoT-SORT configuration fall under AGPL-3.0~\cite{jocher2026ultralytics}.
+The image encoder of the tracer (MobileNetV3-Small with ImageNet weights) falls under the licence of torchvision.
+
+Two packaging limits remain.
+\begin{enumerate}
+\item The cropping code in the package was not compared bit for bit with the cropping code used for training and scoring. The rule of Eq~\ref{eq:s1crop} reads the same in both.
+\item The speed configuration stores the field network weights at 16-bit precision and compiles the models, whereas all accuracy results were computed at 32-bit precision without compilation.
+\end{enumerate}
+The tracer file stores no invalid-seed threshold; the manifests of the release and the video commands of the code repository apply 0.6.
+
+\section*{Limits of the evidence}
+
+The following limits apply to the results in this text and in the main text.
+
+\begin{enumerate}
+\item \textbf{Repeated reads of the test images.} The 493 images of the development test set were scored several times during development. Only StarDome and StarTrack (30 images each) were not.
+\item \textbf{Near-identical images across splits.} About 47 arm-test images have a near-identical training image in another acquisition group. The removal step used identical perceptual hashes only.
+\item \textbf{No end-to-end claim.} The tracer was scored on annotated crops, not on crops cut by the detector. In addition, 217 or 218 of the arm-test crops were cut from images on which the detector was trained. We make no claim about the accuracy of the whole pipeline on unseen images.
+\item \textbf{Groups are not animals.} Acquisition groups and capture groups are sessions, image clusters, tasks or days. The number of animals is not recorded, and the same animal may appear in training and test images. For StarDome and StarTrack the independence of test and training animals was not verified.
+\item \textbf{Weight of the sources.} Group-macro F1 on the development test set is dominated by crops from detector images. Sleepy Stars contributes 5 of 180 groups, and StarTrack is one group, so it has no interval across groups.
+\item \textbf{Earlier use of detector images.} Of the 7,978 images of the detection dataset, 7,881 were used in earlier fits of the detector. The test split is held out for this campaign only.
+\item \textbf{PWS is a within-cruise result.} The 243 PWS test images are one capture group, and 635 images from the other two days of the same cruise are in training. We report PWS apart from the other field images.
+\item \textbf{Few field groups.} Recall on field images without PWS (0.668) rests on 184 stars in 7 capture groups and has no recorded interval. The Web row rests on 28 stars.
+\item \textbf{Detector selection.} The selected size and label scheme led on validation by 0.0010 in mask AP, with an interval that includes zero. Of the seven registered contrasts, only the two between the smallest sizes had Holm-adjusted p values below 0.05.
+\item \textbf{No empty validation images.} The validation split of the detection dataset has no annotation-free image.
+\item \textbf{Threshold at the edge of the grid.} The invalid-seed threshold of 0.6 was the largest candidate tested.
+\item \textbf{Combined ablation.} The no-embedding configuration removed the embedding input and the suppression step together. The separation of the two is post hoc.
+\item \textbf{Baseline not tuned.} The shortest-path decoder ran with fixed default settings. One check on validation images raised its score by about 1 percentage point, so the difference of 5.01 percentage points may be about 1 point smaller with tuning.
+\item \textbf{No test of the field network maps.} Only validation scores from the training log exist for the maps.
+\item \textbf{Arm identity over time.} No annotation of arm identity in video exists. The association rules were not scored against ground truth.
+\item \textbf{Speed tests used another detector.} All throughput figures used the earlier one-class detector, on synthetic video with about 2.8 stars per frame, with one pod per GPU type.
+\item \textbf{Decoder timing.} The comparison of decoder times sets one CPU process against one GPU on a shared workstation, one crop at a time.
+\item \textbf{Annotation.} Landmarks were not marked on every image. No written rule for marking them and no agreement check is recorded.
+\end{enumerate}
