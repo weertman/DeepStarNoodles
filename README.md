@@ -7,6 +7,8 @@ crop, and a recurrent tracer (Noodle Tracer) walks each arm from tip to base.
 It is research software for studying posture and movement from recorded
 imagery.
 
+![A sunflower star in a dive video is detected by YOLO26, mapped by Hydra into 18 dense maps, and traced by the GRU Noodle Tracer, whose walkers step from each arm tip to its base.](docs/assets/deepstarnoodles_pipeline.gif)
+
 **Status:** research release accompanying the DeepStarNoodles methods paper.
 The released evaluation supports per-image arm tracing. Video `track_id` values
 are causal associations for visualization and downstream analysis; they are
