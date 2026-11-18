@@ -6,7 +6,7 @@ from pathlib import Path
 import tomllib
 
 IMAGE = "runpod/pytorch@sha256:cb154fcca15d1d6ce858cfa672b76505e30861ef981d28ec94bd44168767d853"
-MODELS_URL = "https://github.com/weertman/deepstarnoodles-inference/releases/download/models-seed0-20261028/manifest.json"
+MODELS_URL = "https://github.com/weertman/deepstarnoodles-inference/releases/download/models-20261117/manifest.json"
 VIDEO_SUFFIXES = (".mp4", ".mkv", ".mov", ".avi")
 
 

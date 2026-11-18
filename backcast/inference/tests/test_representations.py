@@ -384,16 +384,26 @@ def test_cli_name_applies_to_one_file_and_is_refused_otherwise(tmp_path, example
 
 
 def test_input_names_and_discovery(tmp_path):
-    for rel in ("a/predictions.jsonl", "b/predictions.jsonl.zst", "c.jsonl.gz", "c.jsonl", "d/worker.0.json",
-                "d/x.jsonl.part", "d/report.json"):
+    for rel in ("a/predictions.jsonl", "b/predictions.jsonl.zst", "c.jsonl.gz", "d/worker.0.json",
+                "d/x.jsonl.part", "d/report.json", "_manifest.jsonl", "d/_queue.jsonl", "camA/C0001.mp4.jsonl.zst",
+                "camB/C0001.mp4.jsonl"):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text("")
-    found = R.collect_inputs([str(tmp_path)])
-    assert [Path(p).relative_to(tmp_path).as_posix() for p in found] == [
-        "a/predictions.jsonl", "b/predictions.jsonl.zst", "c.jsonl", "c.jsonl.gz"]
-    assert R.input_names(found) == ["a", "b", "c", "c__2"]
+    found = R.collect_named_inputs([str(tmp_path)])
+    assert [(Path(p).relative_to(tmp_path).as_posix(), name) for p, name in found] == [
+        ("a/predictions.jsonl", "a"), ("b/predictions.jsonl.zst", "b"), ("c.jsonl.gz", "c"),
+        ("camA/C0001.mp4.jsonl.zst", "camA/C0001.mp4"), ("camB/C0001.mp4.jsonl", "camB/C0001.mp4")]
+    assert R.collect_inputs([str(tmp_path)]) == [path for path, _ in found]
+    assert R.collect_named_inputs([str(tmp_path / "camA")])[0][1] == "C0001.mp4"
+    assert R.input_names([p for p, _ in found]) == ["a", "b", "c", "C0001.mp4", "C0001.mp4__2"]
     with pytest.raises(ValueError, match="stdin"):
-        R.collect_inputs(["-", str(tmp_path / "c.jsonl")])
+        R.collect_inputs(["-", str(tmp_path / "c.jsonl.gz")])
+    # the same name from two places is refused, not numbered in sorted order
+    with pytest.raises(ValueError, match="would both be named 'C0001.mp4'"):
+        R.collect_named_inputs([str(tmp_path / "camA"), str(tmp_path / "camB")])
+    (tmp_path / "c.jsonl").write_text("")
+    with pytest.raises(ValueError, match="same video in two formats"):
+        R.collect_named_inputs([str(tmp_path)])
 
 
 def test_axis_table_matches_compute_all(example):
@@ -427,16 +437,272 @@ def test_zstd_stream_glue_with_a_stand_in_module(tmp_path, example, monkeypatch)
 
     calls = []
 
+    class Frame:
+        """One frame's decompressobj, through the zstd CLI: finished once the bytes so far decompress."""
+
+        def __init__(self):
+            self.seen, self.eof, self.unused_data = b"", False, b""
+
+        def decompress(self, data):
+            calls.append(len(data))
+            self.seen += data
+            done = subprocess.run(["zstd", "-q", "-d", "-c"], input=self.seen, capture_output=True)
+            if done.returncode:
+                return b""
+            self.eof = True
+            return done.stdout
+
     class Decompressor:
-        def stream_reader(self, fh, read_across_frames=False, closefd=False):
-            calls.append((read_across_frames, closefd))
-            data = subprocess.run(["zstd", "-q", "-d", "-c"], input=fh.read(), capture_output=True, check=True).stdout
-            if closefd:
-                fh.close()
-            return io.BytesIO(data)
+        def decompressobj(self):
+            return Frame()
 
     monkeypatch.setitem(sys.modules, "zstandard", types.SimpleNamespace(ZstdDecompressor=Decompressor))
     plain = write_jsonl(tmp_path / "z.jsonl", records_from(example.select_frames(slice(0, 4))))
     subprocess.run(["zstd", "-q", "-f", str(plain), "-o", str(tmp_path / "z.jsonl.zst")], check=True)
     same_array(R.load_inference(tmp_path / "z.jsonl.zst")[3].points, R.load_inference(plain)[3].points)
-    assert calls == [(True, True)]
+    assert calls == [(tmp_path / "z.jsonl.zst").stat().st_size]
+    # A file cut inside its frame is an error, not a shorter video.
+    whole = (tmp_path / "z.jsonl.zst").read_bytes()
+    (tmp_path / "cut.jsonl.zst").write_bytes(whole[:len(whole) // 2])
+    with pytest.raises(EOFError, match="truncated"):
+        R.load_inference(tmp_path / "cut.jsonl.zst")
+
+
+# ------------------------------------------------------------------ robustness (backcast rehearsal, 0.5.0.dev13)
+def manifest_of(directory):
+    return json.loads((directory / "manifest.json").read_text())
+
+
+def test_csv_tables_of_a_sequence_without_arms(tmp_path, example):
+    records = records_from(example.select_frames(slice(0, 3)))
+    for record in records:
+        record["stars"][0]["arms"] = []
+    path = write_jsonl(tmp_path / "noarms.jsonl", records)
+    assert run_cli(path, "--output", tmp_path / "o", "--csv", "--preset", "fig4b", "fig6_flipping", "fig6c") == 0
+    rows = manifest_of(tmp_path / "o")["sequences"]
+    assert [row["status"] for row in rows] == ["ok"] * 3 and all(row["arms"] == 0 for row in rows)
+    with (tmp_path / "o" / "fig4b" / "noarms__star3__arms.csv").open() as fh:
+        assert list(csv.DictReader(fh)) == []
+    with (tmp_path / "o" / "fig4b" / "noarms__star3__frames.csv").open() as fh:
+        assert len(list(csv.DictReader(fh))) == 3
+
+
+def test_zstd_truncation_with_zstandard(tmp_path, example):
+    zstandard = pytest.importorskip("zstandard")
+    records = records_from(example.select_frames(slice(0, 30)))
+    text = "".join(json.dumps(r) + "\n" for r in records).encode()
+    # two frames, as appending zstd outputs (or a streaming writer) produces
+    middle = text.index(b"\n", len(text) // 2) + 1
+    whole = zstandard.ZstdCompressor().compress(text[:middle]) + zstandard.ZstdCompressor().compress(text[middle:])
+    (tmp_path / "two.jsonl.zst").write_bytes(whole)
+    assert R.load_inference(tmp_path / "two.jsonl.zst")[3].n_frames == 30
+    for cut in (len(whole) - 7, len(whole) * 3 // 4, len(whole) // 3):
+        (tmp_path / "cut.jsonl.zst").write_bytes(whole[:cut])
+        with pytest.raises((EOFError, ContainerError), match="truncated"):
+            R.load_inference(tmp_path / "cut.jsonl.zst")
+    (tmp_path / "in").mkdir()
+    (tmp_path / "in" / "cut.jsonl.zst").write_bytes(whole[:len(whole) * 3 // 4])
+    assert run_cli(tmp_path / "in", "--output", tmp_path / "o", "--preset", "fig4b") == 1
+    assert manifest_of(tmp_path / "o")["inputs"][0]["status"] == "error"
+
+
+def test_runner_manifest_is_not_an_input(tmp_path, example):
+    (tmp_path / "ann" / "cam1").mkdir(parents=True)
+    write_jsonl(tmp_path / "ann" / "cam1" / "C0001.mp4.jsonl", records_from(example.select_frames(slice(0, 5))))
+    (tmp_path / "ann" / "_manifest.jsonl").write_text('{"relative": "cam1/C0001.mp4", "frames": 5}\n')
+    assert run_cli(tmp_path / "ann", "--output", tmp_path / "o", "--preset", "fig4b") == 0
+    assert [item["name"] for item in manifest_of(tmp_path / "o")["inputs"]] == ["cam1/C0001.mp4"]
+
+
+def test_cameras_with_the_same_file_names_stay_apart_and_overwrite_clears_stale_outputs(tmp_path, example):
+    tracked = tmp_path / "tracked"
+    for cam, part in (("camA", slice(0, 5)), ("camB", slice(5, 12))):
+        (tracked / cam).mkdir(parents=True)
+        write_jsonl(tracked / cam / "C0001.mp4.jsonl", records_from(example.select_frames(part)))
+    out = tmp_path / "o"
+    assert run_cli(tracked / "camB", "--output", out, "--preset", "fig4b", "--csv") == 0
+    assert (out / "fig4b" / "C0001.mp4__star3.npz").is_file()
+    assert run_cli(tracked, "--output", out, "--preset", "fig4b", "--csv", "--overwrite") == 0
+    files = sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file())
+    assert files == ["containers/camA/C0001.mp4__star3.npz", "containers/camB/C0001.mp4__star3.npz",
+                     "fig4b/camA/C0001.mp4__star3.npz", "fig4b/camA/C0001.mp4__star3__arms.csv",
+                     "fig4b/camA/C0001.mp4__star3__frames.csv", "fig4b/camB/C0001.mp4__star3.npz",
+                     "fig4b/camB/C0001.mp4__star3__arms.csv", "fig4b/camB/C0001.mp4__star3__frames.csv",
+                     "manifest.csv", "manifest.json"]
+    assert PolylineContainer.load(out / "containers" / "camA" / "C0001.mp4__star3.npz").n_frames == 5
+    assert PolylineContainer.load(out / "containers" / "camB" / "C0001.mp4__star3.npz").n_frames == 7
+    rows = manifest_of(out)["sequences"]
+    assert [(row["sequence"], row["outputs"], row["frames_csv"]) for row in rows] == [
+        ("camA/C0001.mp4__star3", "fig4b/camA/C0001.mp4__star3.npz", "camA/C0001.mp4__star3__frames.csv"),
+        ("camB/C0001.mp4__star3", "fig4b/camB/C0001.mp4__star3.npz", "camB/C0001.mp4__star3__frames.csv")]
+    # --overwrite clears only a representations output directory
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "notes.txt").write_text("keep")
+    with pytest.raises(SystemExit):
+        run_cli(tracked, "--output", tmp_path / "other", "--overwrite")
+    assert (tmp_path / "other" / "notes.txt").read_text() == "keep"
+    with pytest.raises(SystemExit):     # two directories with the same relative names
+        run_cli(tracked / "camA", tracked / "camB", "--output", tmp_path / "x")
+
+
+def test_frames_without_a_record_become_no_star_rows(tmp_path, example):
+    part = example.select_frames(slice(0, 40))
+    dropped = [r for i, r in enumerate(records_from(part)) if not 10 <= i < 20]
+    zero = records_from(part, drop=set(range(10, 20)))
+    with pytest.warns(UserWarning, match="10 frames between 640 and 679 have no record"):
+        a = R.load_inference(write_jsonl(tmp_path / "dropped.jsonl", dropped))[3]
+    b = R.load_inference(write_jsonl(tmp_path / "zero.jsonl", zero))[3]
+    assert a.n_frames == b.n_frames == 40 and a.meta["missing_records"] == 10 and "missing_records" not in b.meta
+    for name in ("frame_index", "time_s", "has_star", "crop", "body_origin_model", "points", "frame_arm_offsets"):
+        same_array(getattr(a, name), getattr(b, name))
+    assert "no record" in " ".join(a.meta["warnings"])
+    for name, path in (("a", tmp_path / "dropped.jsonl"), ("b", tmp_path / "zero.jsonl")):
+        assert run_cli(path, "--output", tmp_path / name, "--preset", "fig4e", "--r0", "100") == 0
+    with np.load(tmp_path / "a" / "fig4e" / "dropped__star3.npz") as x, \
+            np.load(tmp_path / "b" / "fig4e" / "zero__star3.npz") as y:
+        assert x.files == y.files and all(np.array_equal(x[k], y[k], equal_nan=x[k].dtype.kind == "f")
+                                          for k in x.files)
+    assert manifest_of(tmp_path / "a")["status"] == "complete_with_warnings"
+    assert manifest_of(tmp_path / "a")["inputs"][0]["status"] == "warning"
+    assert manifest_of(tmp_path / "b")["status"] == "complete"
+    # without a frame rate the times of missing frames are unknown: they are left out, with a warning
+    with pytest.warns(UserWarning, match="frame rate is unknown"):
+        no_fps = R.load_inference(write_jsonl(tmp_path / "nofps.jsonl", [
+            r for i, r in enumerate(records_from(part, fps=None)) if not 10 <= i < 20]))[3]
+    assert no_fps.n_frames == 30 and "frame rate is unknown" in no_fps.meta["warnings"][0]
+    # an untracked single star fills by frame number too
+    archive = [r for i, r in enumerate(records_from(part, archive=True)) if not 10 <= i < 20]
+    with pytest.warns(UserWarning, match="no record"):
+        single = R.load_inference(write_jsonl(tmp_path / "arch.jsonl", archive), untracked="single")["single"]
+    assert single.n_frames == 40 and single.has_star.sum() == 30
+
+
+def test_untracked_single_points_at_track_videos(tmp_path, example):
+    crowded = write_jsonl(tmp_path / "crowded.jsonl", records_from(example.select_frames(slice(0, 6)), archive=True,
+                                                                   extra_star={2}))
+    with pytest.raises(ContainerError, match="track-videos"):
+        R.load_inference(crowded, untracked="single")
+
+
+def test_single_star_and_multi_star_records_in_one_file_are_refused(tmp_path, example):
+    records = records_from(example.select_frames(slice(0, 6)), archive=True)
+    for record in records[2:4]:
+        del record["stars"]
+    with pytest.raises(ContainerError, match="single-star records .* and multi-star records"):
+        R.load_inference(write_jsonl(tmp_path / "mixed.jsonl", records), untracked="single")
+
+
+def test_a_truncated_last_line_names_the_line(tmp_path, example):
+    text = "".join(json.dumps(r) + "\n" for r in records_from(example.select_frames(slice(0, 4))))
+    (tmp_path / "cut.jsonl").write_text(text[:-50])
+    with pytest.raises(ContainerError, match=r"line 4 \(after frame 642\) is not a JSON record.*truncated"):
+        R.load_inference(tmp_path / "cut.jsonl")
+    (tmp_path / "blank.jsonl").write_text("\n" + text.replace("\n", "\n\n") + "  \n")
+    assert R.load_inference(tmp_path / "blank.jsonl")[3].n_frames == 4
+
+
+def test_empty_inputs_are_reported(tmp_path, example):
+    (tmp_path / "in").mkdir()
+    (tmp_path / "in" / "zero.jsonl").write_text("")
+    write_jsonl(tmp_path / "in" / "nostars.jsonl", [{**r, "stars": []} for r in records_from(
+        example.select_frames(slice(0, 3)))])
+    write_jsonl(tmp_path / "in" / "good.jsonl", records_from(example.select_frames(slice(0, 3))))
+    with pytest.raises(ContainerError, match="holds no records"):
+        R.load_inference(tmp_path / "in" / "zero.jsonl")
+    assert run_cli(tmp_path / "in", "--output", tmp_path / "o", "--preset", "fig4b") == 1
+    status = {item["name"]: item["status"] for item in manifest_of(tmp_path / "o")["inputs"]}
+    assert status == {"good": "ok", "nostars": "empty", "zero": "error"}
+    with (tmp_path / "o" / "manifest.csv").open() as fh:
+        assert {(row["input"], row["status"]) for row in csv.DictReader(fh)} == {
+            ("good", "ok"), ("nostars", "empty"), ("zero", "error")}
+    (tmp_path / "in" / "zero.jsonl").unlink()
+    assert run_cli(tmp_path / "in", "--output", tmp_path / "p", "--preset", "fig4b") == 0   # empty is not a failure
+
+
+def test_a_field_missing_on_some_star_rows_marks_the_input(tmp_path, example):
+    records = records_from(example.select_frames(slice(0, 6)))
+    for record in records[3:]:
+        del record["stars"][0]["body_origin_model"]
+    path = write_jsonl(tmp_path / "mixed.jsonl", records)
+    assert run_cli(path, "--output", tmp_path / "o", "--preset", "fig4b") == 0
+    manifest = manifest_of(tmp_path / "o")
+    assert manifest["status"] == "complete_with_warnings" and manifest["inputs"][0]["status"] == "warning"
+    row = manifest["sequences"][0]
+    assert row["status"] == "warning" and "body_origin_model present on 3 of 6" in row["warnings"][0]
+    assert run_cli(path, "--output", tmp_path / "p", "--preset", "fig4b", "--require-complete") == 1
+
+
+# ------------------------------------------------------------------ input discovery and checks (verification of dev13)
+def test_a_symlinked_camera_directory_is_read(tmp_path, example):
+    for directory in ("in/camA", "real/camB"):
+        (tmp_path / directory).mkdir(parents=True)
+    write_jsonl(tmp_path / "in" / "camA" / "C0001.mp4.jsonl", records_from(example.select_frames(slice(0, 3))))
+    write_jsonl(tmp_path / "real" / "camB" / "C0001.mp4.jsonl", records_from(example.select_frames(slice(0, 4))))
+    (tmp_path / "in" / "camB").symlink_to(tmp_path / "real" / "camB", target_is_directory=True)
+    assert run_cli(tmp_path / "in", "--output", tmp_path / "o", "--preset", "fig4b") == 0
+    assert [item["name"] for item in manifest_of(tmp_path / "o")["inputs"]] == ["camA/C0001.mp4", "camB/C0001.mp4"]
+
+
+def test_a_track_videos_output_inside_a_raw_tree_is_skipped(tmp_path, example, capsys):
+    raw = tmp_path / "raw"
+    (raw / "tracked").mkdir(parents=True)
+    write_jsonl(raw / "flip1.jsonl", records_from(example.select_frames(slice(0, 3)), archive=True))
+    write_jsonl(raw / "tracked" / "flip1.jsonl", records_from(example.select_frames(slice(0, 3))))
+    (raw / "tracked" / "_track-videos.log").write_text("{}\n")
+    capsys.readouterr()
+    assert run_cli(raw, "--output", tmp_path / "o", "--untracked", "single", "--preset", "fig4b") == 0
+    assert [item["name"] for item in manifest_of(tmp_path / "o")["inputs"]] == ["flip1"]
+    assert "it holds track-videos output" in capsys.readouterr().err
+    # the tracked tree on its own is read as usual
+    assert run_cli(raw / "tracked", "--output", tmp_path / "t", "--preset", "fig4b") == 0
+    assert [item["name"] for item in manifest_of(tmp_path / "t")["inputs"]] == ["flip1"]
+
+
+def test_an_underscore_record_file_is_skipped_with_a_note(tmp_path, example, capsys):
+    (tmp_path / "mix").mkdir()
+    for name in ("_C0002.mp4.jsonl", "C0003.mp4.jsonl"):
+        write_jsonl(tmp_path / "mix" / name, records_from(example.select_frames(slice(0, 3))))
+    capsys.readouterr()
+    assert run_cli(tmp_path / "mix", "--output", tmp_path / "o", "--preset", "fig4b") == 0
+    assert [item["name"] for item in manifest_of(tmp_path / "o")["inputs"]] == ["C0003.mp4"]
+    assert "_C0002.mp4.jsonl" in capsys.readouterr().err
+    assert run_cli(tmp_path / "mix" / "_C0002.mp4.jsonl", "--output", tmp_path / "p", "--preset", "fig4b") == 0
+
+
+def test_a_file_shorter_than_the_fleet_manifest_says_is_an_error(tmp_path, example):
+    (tmp_path / "ann" / "cam").mkdir(parents=True)
+    write_jsonl(tmp_path / "ann" / "cam" / "C0001.mp4.jsonl", records_from(example.select_frames(slice(0, 4))))
+    (tmp_path / "ann" / "_manifest.jsonl").write_text('{"relative": "cam/C0001.mp4", "frames": 6}\n')
+    with pytest.raises(ContainerError, match="holds 4 records, but .* lists 6"):
+        R.load_inference(tmp_path / "ann" / "cam" / "C0001.mp4.jsonl",
+                         expected_records=(6, tmp_path / "ann" / "_manifest.jsonl"))
+    assert run_cli(tmp_path / "ann", "--output", tmp_path / "o", "--preset", "fig4b") == 1
+    item = manifest_of(tmp_path / "o")["inputs"][0]
+    assert item["status"] == "error" and "lists 6 for it" in item["error"]
+    assert run_cli(tmp_path / "ann" / "cam" / "C0001.mp4.jsonl", "--output", tmp_path / "p", "--preset", "fig4b") == 1
+
+
+def test_a_bad_first_line_names_the_line(tmp_path, example):
+    lines = [json.dumps(r) for r in records_from(example.select_frames(slice(0, 3)))]
+    (tmp_path / "cut1.jsonl").write_text(lines[0][:-40] + "\n" + "\n".join(lines[1:]) + "\n")
+    (tmp_path / "only.jsonl").write_text(lines[0][:-40])
+    for name in ("cut1.jsonl", "only.jsonl"):
+        with pytest.raises(ContainerError, match=r"line 1 \(before any record\) is not a JSON record.*truncated"):
+            R.load_inference(tmp_path / name)
+    (tmp_path / "number.jsonl").write_text(lines[0] + "\n5\n" + lines[1] + "\n")
+    with pytest.raises(ContainerError, match="line 2 is not a frame record"):
+        R.load_inference(tmp_path / "number.jsonl")
+    (tmp_path / "noframe.jsonl").write_text(lines[0] + '\n{"stars": []}\n')
+    with pytest.raises(ContainerError, match="record 2 is not a frame record"):
+        R.load_inference(tmp_path / "noframe.jsonl")
+    (tmp_path / "pretty.json.txt").write_text(json.dumps({"frames": json.loads("[" + ",".join(lines) + "]")},
+                                                         indent=1))
+    with (tmp_path / "pretty.json.txt").open() as stream:     # a pretty-printed document is still parsed whole
+        assert R.load_inference(stream)[3].n_frames == 3
+
+
+def test_one_record_off_the_frame_grid_does_not_change_the_spacing():
+    assert R._frame_step([0, 2, 4, 6, 8, 41, 42, 44]) == 2
+    assert R._frame_span([0, 2, 4, 11, 12, 14], 0, 14) == [0, 2, 4, 6, 8, 10, 11, 12, 14]
+    assert R._frame_span([0, 1, 2, 5, 6], 1, 6) == [1, 2, 3, 4, 5, 6]
+    assert R._frame_span([7], 7, 7) == [7] and R._frame_step([7]) == 1

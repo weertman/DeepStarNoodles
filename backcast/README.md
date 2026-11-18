@@ -101,7 +101,7 @@ deepstarnoodles-inference track-videos /path/to/annotations --output /path/to/tr
 deepstarnoodles-inference representations /path/to/tracked --output /path/to/representations --csv
 ```
 
-`track-videos` gives each star a `star_track_id` and each arm a `track_id`, as live tracking would have during inference. It writes a new copy and skips videos it has already done, so you can rerun it as more annotations arrive. Detections it couldn't confirm move to each frame's `untracked_stars`. `representations` writes the paper's figure outputs per star; `inference/docs/representations.md` explains its presets.
+`track-videos` gives each star a `star_track_id` and each arm a `track_id`. Star IDs come from a tracker built for 1–2 fps records, which starts a new ID where two stars could be confused; `--star-tracker botsort` gives the earlier behaviour, as live tracking would have assigned them. It writes a new copy and skips videos it has already done, so you can rerun it as more annotations arrive. Detections it couldn't confirm move to each frame's `untracked_stars`. `representations` writes the paper's figure outputs per star; `inference/docs/representations.md` explains its presets.
 
 `docs/figures/polyline_transforms.py` draws, on one frame of any tracked video, how `representations` turns each traced arm into its output columns; `docs/figures/polyline_transforms_video.py` animates the same steps.
 
@@ -109,7 +109,7 @@ deepstarnoodles-inference representations /path/to/tracked --output /path/to/rep
 
 ## Choosing GPUs and the number of pods
 
-`docs/speed_test.md` has measured rates and costs per GPU type, on the lab mix of about 2.8 stars per frame. The cheapest measured was the RTX 5090:
+`docs/speed_test.md` has measured rates and costs per GPU type, on the lab mix of about 2.8 stars per frame. They were measured with the earlier one-class detector, of the same architecture and size as the paper's. The cheapest measured was the RTX 5090:
 
 | GPU | Images/s | $/h | $ per camera-year | Days per camera-year, 5 pods |
 |---|---:|---:|---:|---:|
@@ -134,13 +134,13 @@ The RTX 5090 was out of stock during the first test on 31 October and was measur
 
 The controller keeps a work list in SQLite (`run_dir/state.sqlite`). For each pod it installs the pinned runtime, fetches the public model weights directly from GitHub and starts `serve-videos` under CUDA MPS. It keeps a few videos waiting on the pod's local disk, polls every 20 seconds, compresses each finished annotation file on the pod, downloads it, checks the record count, and only then marks the video done and deletes the pod's copy. A pod that dies or expires gives its unfinished videos back to the queue. RunPod also ends every pod after `lease_hours`, as a backstop if the controller dies.
 
-`inference/` is a vendored copy of the `deepstarnoodles-inference` package at 0.5.0.dev12, which adds `serve-videos` and the compile options that the published image lacks. `inference/BENCHMARK_RESULTS.md` is the full measurement history.
+`inference/` is a vendored copy of the `deepstarnoodles-inference` package at 0.5.0.dev14, which adds `serve-videos` and the compile options that the published image lacks. `inference/BENCHMARK_RESULTS.md` is the full measurement history.
 
-The pods fetch the model set `models-seed0-20261028` (`MODELS_URL` in `backcast/config.py`): the published Hydra and tracer with an earlier one-class detector of the same architecture and size, the detector of the paper's throughput tests. The paper's models are the release [`models-20261117`](https://github.com/weertman/deepstarnoodles-inference/releases/tag/models-20261117). Its manifests set the tracer's invalid-seed threshold to 0.6, which inference 0.5.0.dev14 or later applies; 0.5.0.dev12 ignores the field and traces every seed.
+The pods fetch the paper's models, the release [`models-20261117`](https://github.com/weertman/deepstarnoodles-inference/releases/tag/models-20261117) (`MODELS_URL` in `backcast/config.py`; `models_url` under `[pod]` in `fleet.toml` overrides it). Its manifest pairs the binary detector with Hydra and the tracer and sets the tracer's invalid-seed threshold to 0.6. Until 17 November 2026 the pods fetched `models-seed0-20261028`, the same Hydra and tracer with an earlier one-class detector and no threshold. A rerun skips videos that are already finished, so annotate with the new models into a new output directory rather than mixing the two.
 
 ## Accuracy
 
-The pipeline runs Hydra and the GRU in compiled form, about 40% faster overall. Outputs are not byte-identical to the eager pipeline. On the 478-image validation split, F1 is 0.8033 against 0.8034, with one extra false positive in 4,801 arms. On the lab mix, 99.6% of arms stay within 2 px and star counts match in all 371 frames. Compiled outputs repeat byte for byte on one GPU type. Between chip families, about 1.5% of arms lack a match within 2 px and 0.2–0.3% of frames change star count, with no visible bias in star counts, arm counts or arm lengths. The fleet mixes families by default; set `gpu_family` in `fleet.toml` to rent only one.
+The pipeline runs Hydra and the GRU in compiled form, about 40% faster overall. Outputs are not byte-identical to the eager pipeline. On the 478-image validation split, F1 is 0.8033 against 0.8034, with one extra false positive in 4,801 arms (both without the invalid-seed threshold). On the lab mix, 99.6% of arms stay within 2 px and star counts match in all 371 frames. Compiled outputs repeat byte for byte on one GPU type. Between chip families, about 1.5% of arms lack a match within 2 px and 0.2–0.3% of frames change star count, with no visible bias in star counts, arm counts or arm lengths. The fleet mixes families by default; set `gpu_family` in `fleet.toml` to rent only one.
 
 ## Tests
 

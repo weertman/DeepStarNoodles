@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "id": "starseg_coarse_hydra_gru128_seed0_20261117",
+  "created_date": "2026-11-17",
+  "path_base": "manifest_directory",
+  "models": {
+    "starseg": {
+      "path": "starseg_coarse.pt",
+      "sha256": "5a268a704e677d463221a2c262c8ae1f43ed4db401dd7a68fb93f6988a34323c",
+      "as_trained_sha256": "61732caf42c58dd3a332979c0e82a0172f9c5d6d292226bd1b0dcc32b1725c88",
+      "as_trained_note": "The published file is the run's terminal checkpoint with the absolute paths of the training machine replaced by relative ones; every weight tensor is bit-identical to the file as trained.",
+      "architecture": "yolo26l-seg",
+      "run_id": "T1_l_C_adamw_e050_seed0",
+      "checkpoint_rule": "terminal_last",
+      "label_scheme": "C",
+      "classes": 4,
+      "target_class_name": "sunflower_star",
+      "scientific_name": "Pycnopodia_helianthoides",
+      "seed": 0,
+      "checkpoint_bytes": 63534342,
+      "checkpoint_parameters": 31378804,
+      "image_size": 1024,
+      "dataset_split_id": "starseg-20261106-64f5f09f0ced",
+      "url": "https://github.com/weertman/deepstarnoodles-inference/releases/download/models-20261117/starseg_coarse.pt"
+    },
+    "hydra": {
+      "path": "hydra.pt",
+      "sha256": "aa056f933c1a0994fb299203aa20423c5208637d2eb4ede7e942abcc3aa91d7c",
+      "architecture": "dinov3_convnext_base",
+      "prefer_ema": true,
+      "checkpoint_rule": "terminal_last",
+      "seed": 0,
+      "checkpoint_bytes": 727321088,
+      "model_parameters": 90883602,
+      "output_channels": 18,
+      "embedding_dim": 8,
+      "image_size": 512,
+      "url": "https://github.com/weertman/deepstarnoodles-inference/releases/download/models-20261117/hydra.pt"
+    },
+    "tracer": {
+      "path": "tracer.pt",
+      "sha256": "e6c1506067fc5864ab1d0d648dec2f7932632017d952753cb68f80fed2c4812f",
+      "architecture": "noodle_tracer_grucell",
+      "hidden_size": 128,
+      "seed": 0,
+      "cycles": 30,
+      "optimizer_steps": 120000,
+      "checkpoint_bytes": 2326160,
+      "model_parameters": 194463,
+      "parent_checkpoint_sha256": "aa056f933c1a0994fb299203aa20423c5208637d2eb4ede7e942abcc3aa91d7c",
+      "endpoint_refinement": false,
+      "rgb_features": true,
+      "embedding_features": true,
+      "trace_params_source": "checkpoint",
+      "invalid_seed_threshold": 0.6,
+      "invalid_seed_threshold_note": "Chosen on the validation split. The checkpoint stores no threshold, so the manifest sets it; all other trace parameters come from the checkpoint.",
+      "normalization_source": "checkpoint_buffers",
+      "url": "https://github.com/weertman/deepstarnoodles-inference/releases/download/models-20261117/tracer.pt"
+    }
+  },
+  "preprocessing": {
+    "detector_image_size": 1024,
+    "detector_confidence": 0.25,
+    "crop_image_size": 512,
+    "context_scale": 2.0
+  },
+  "provenance": {
+    "normalizer_sha256": "e50e8ae9e5f3a9e495ca9167aa3850f3c74f4dbc5b1024d3c2f04404033c29a9",
+    "normalization_runtime_source": "tracer checkpoint dense_mean/dense_std buffers; external JSON is provenance only",
+    "detection_dataset": "StarSeg, frozen 2026-11-07 (split starseg-20261106-64f5f09f0ced)",
+    "arm_dataset": "DeepStarNoodles arm polylines, frozen 2026-10-26"
+  },
+  "validation": {
+    "detector_test": {
+      "rule": "sunflower sea star masks matched one to one at mask IoU >= 0.5, confidence >= 0.25; values are precision, recall, F1",
+      "all": {
+        "precision": 0.934,
+        "recall": 0.909,
+        "f1": 0.921
+      },
+      "lab": {
+        "precision": 0.926,
+        "recall": 0.927,
+        "f1": 0.926
+      },
+      "field_without_pws": {
+        "precision": 0.92,
+        "recall": 0.69,
+        "f1": 0.789
+      },
+      "pws": {
+        "precision": 0.976,
+        "recall": 1.0,
+        "f1": 0.988
+      },
+      "note": "Field images without the Prince William Sound (PWS) cruise are reported apart from PWS and are not pooled with it."
+    },
+    "note": "Hydra and the tracer were trained and scored on annotated crops, not on this detector's crops. Arm accuracy with each detector in the loop was not measured separately."
+  }
+}

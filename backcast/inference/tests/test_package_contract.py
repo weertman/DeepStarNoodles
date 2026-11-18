@@ -39,6 +39,39 @@ def test_relative_manifest_and_input_paths_resolve_without_checkout(tmp_path, mo
         benchmark.verify_models(manifest)
 
 
+def test_manifest_sets_the_invalid_seed_threshold_over_the_checkpoint(tmp_path, monkeypatch):
+    from deepstarnoodles_inference.noodle_tracer import NoodleTraceParams
+
+    models = {}
+    for key in ("starseg", "hydra", "tracer"):
+        file = tmp_path / f"{key}.pt"
+        file.write_bytes(key.encode())
+        models[key] = {"path": file.name, "sha256": benchmark.sha256(file)}
+    models["hydra"]["architecture"] = "dinov3_convnext_base"
+    manifest = tmp_path / "manifest.json"
+    payload = {"schema_version": 1, "path_base": "manifest_directory", "models": models}
+    stored = NoodleTraceParams(tip_threshold=0.3)
+    monkeypatch.setattr(benchmark, "load_noodle_tracer_checkpoint", lambda path, device: ("tracer", stored, {}, None))
+
+    # Without the field the checkpoint's own parameters are used unchanged.
+    manifest.write_text(json.dumps(payload))
+    _, paths = benchmark.verify_models(manifest)
+    assert benchmark.load_tracer(paths, "cpu")[1] is stored
+
+    models["tracer"]["invalid_seed_threshold"] = 0.6
+    manifest.write_text(json.dumps(payload))
+    _, paths = benchmark.verify_models(manifest)
+    params = benchmark.load_tracer(paths, "cpu")[1]
+    assert params.invalid_seed_threshold == 0.6 and params.tip_threshold == 0.3
+    assert stored.invalid_seed_threshold is None
+
+    for bad in (0, 1.5, "0.6", True):
+        models["tracer"]["invalid_seed_threshold"] = bad
+        manifest.write_text(json.dumps(payload))
+        with pytest.raises(ValueError, match="invalid_seed_threshold"):
+            benchmark.verify_models(manifest)
+
+
 @pytest.mark.parametrize("command", ["archive", "live-replay"])
 def test_inference_aliases_process_full_csv_without_implicit_warmup(tmp_path, monkeypatch, command):
     index = tmp_path / "images.csv"

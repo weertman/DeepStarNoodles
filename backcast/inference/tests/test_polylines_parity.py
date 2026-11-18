@@ -2,7 +2,11 @@
 # changed (see UPSTREAM.json "noodle_polylines"), and the SVD-Kabsch deformation is checked against the stored
 # golden fixtures with `golden_svd` (rtol 1e-12) instead of bit-for-bit. LAPACK's SVD differs in the last
 # bits between numpy builds (2.5.4 / scipy 1.18.1 give up to 4e-15 off the fixtures, which pyproject allows).
-# Every comparison against the in-process reference stays bit-exact.
+# Every comparison against the in-process reference stays bit-exact. Other comparisons against the stored
+# fixtures use `golden`: integers, masks and NaN positions exact, finite floats within 1e-5 of each array's
+# largest value. The figure scripts' float32 arithmetic rounds differently on other CPUs: on a GitHub runner,
+# arc length and curvature differed by up to 1.2e-5 relative on small values and fig5 measures by 7.4e-7 on
+# values of 0.1-0.9, while every in-process reference comparison there matched bit for bit.
 """Public noodle_polylines API == _reference (figure-script ports) == golden fixtures, on the micro example."""
 from __future__ import annotations
 
@@ -28,6 +32,23 @@ def same(a, b):
     a, b = np.asarray(a), np.asarray(b)
     assert a.shape == b.shape, (a.shape, b.shape)
     assert np.array_equal(a, b, equal_nan=a.dtype.kind == 'f'), np.nanmax(np.abs(a.astype(float) - b.astype(float)))
+
+
+def golden(a, b, tol=1e-5):
+    """Fixtures stored on another machine: integers, masks and NaN/inf positions exact; finite floats within
+    `tol` of the array's largest magnitude. Float32 sums round to the size of their terms, not of the result,
+    so small values (e.g. low curvature) can differ by more than their own rtol."""
+    a, b = np.asarray(a), np.asarray(b)
+    if a.dtype.kind not in 'fc' and b.dtype.kind not in 'fc':
+        same(a, b)
+        return
+    a, b = a.astype(float), b.astype(float)
+    assert a.shape == b.shape, (a.shape, b.shape)
+    fa, fb = np.isfinite(a), np.isfinite(b)
+    assert np.array_equal(fa, fb) and np.array_equal(a[~fa], b[~fb], equal_nan=True)
+    if fa.any():
+        scale = np.max(np.abs(b[fb]))
+        assert np.all(np.abs(a[fa] - b[fb]) <= tol * scale), (np.max(np.abs(a[fa] - b[fb])), scale)
 
 
 def golden_svd(a, b):
@@ -71,17 +92,17 @@ def test_resample_and_metrics(c, fx):
     n = len(arms['T0_2_base'])
     sub = c.select_frames(np.arange(c.n_frames))      # identity selection keeps everything
     pts, ao = sub.points, sub.arm_point_offsets
-    same(G.resample_base(pts, ao[:n + 1]), arms['T0_2_base'])
+    golden(G.resample_base(pts, ao[:n + 1]), arms['T0_2_base'])
     tip, L = G.resample_tip(pts, ao[:n + 1])
-    same(tip, arms['T0_2_tip_raw']); same(L, arms['T0_2_tip_raw_L'])
+    golden(tip, arms['T0_2_tip_raw']); golden(L, arms['T0_2_tip_raw_L'])
     tip, L = G.resample_tip(pts, ao[:n + 1], arm_origin=c.body_origin_model[c.arm_frame()[:n]])
-    same(tip, arms['T0_2_tip_rel']); same(L, arms['T0_2_tip_rel_L'])
+    golden(tip, arms['T0_2_tip_rel']); golden(L, arms['T0_2_tip_rel_L'])
     for rule in ('zero', 'nan'):
         L, k = G.arc_length_curvature(pts, ao, rule)
-        same(L, arms[f'T0_3_arc_length_{rule}']); same(k, arms[f'T1_1_curvature_{rule}'])
-    same(G.tips_source(pts, ao, c.frame_arm_offsets, c.crop), arms['T0_4_tip_source'])
+        golden(L, arms[f'T0_3_arc_length_{rule}']); golden(k, arms[f'T1_1_curvature_{rule}'])
+    golden(G.tips_source(pts, ao, c.frame_arm_offsets, c.crop), arms['T0_4_tip_source'])
     rm, _ = FR.body_radius(c)
-    same(G.norm_length(arms['T0_3_arc_length_zero'], c.frame_arm_offsets, rm), arms['T1_2_norm_length'])
+    golden(G.norm_length(arms['T0_3_arc_length_zero'], c.frame_arm_offsets, rm), arms['T1_2_norm_length'])
 
 
 def test_public_resample_equals_reference_per_arm(c):
@@ -98,9 +119,9 @@ def test_public_resample_equals_reference_per_arm(c):
 def test_tip_polar(c, fx):
     arms, _, _ = fx
     ang, rad = G.tip_polar(c.points, c.arm_point_offsets, c.frame_arm_offsets, c.body_origin_model, 'float32')
-    same(ang, arms['T1_3_tip_angle_f32origin']); same(rad, arms['T1_3_tip_radius'])
+    golden(ang, arms['T1_3_tip_angle_f32origin']); golden(rad, arms['T1_3_tip_radius'])
     a32, _ = G.tip_polar(c.points, c.arm_point_offsets, c.frame_arm_offsets, c.body_origin_model, 'float32', 'float32')
-    same(a32, arms['T1_3_tip_angle_f32'])
+    golden(a32, arms['T1_3_tip_angle_f32'])
     frames = R.stats_frames(c, origin_float32=True)
     ref = np.concatenate([x for x, _ in R.tip_polar_stats(frames)])
     same(ang, ref)
@@ -127,11 +148,11 @@ def test_body_path_and_4b_lists(c, tables):
 # ------------------------------------------------------------------------------------------ T2
 def test_frames_t2(c, fx):
     _, fr, _ = fx
-    same(FR.n_arms(c), fr['T2_T2_1_n_arms'])
+    golden(FR.n_arms(c), fr['T2_T2_1_n_arms'])
     rm, rs = FR.body_radius(c)
-    same(rm, fr['T2_T0_6_radius_model']); same(rs, fr['T2_T0_6_radius_source'])
-    same(FR.tip_isotropy(c), fr['T2_T2_6_isotropy_frame_support_centroid'])
-    same(FR.frame_lists_4b(c)['mean_norm_length'], fr['T2_T2_5_mean_normalized_arm_length'])
+    golden(rm, fr['T2_T0_6_radius_model']); golden(rs, fr['T2_T0_6_radius_source'])
+    golden(FR.tip_isotropy(c), fr['T2_T2_6_isotropy_frame_support_centroid'])
+    golden(FR.frame_lists_4b(c)['mean_norm_length'], fr['T2_T2_5_mean_normalized_arm_length'])
 
 
 def test_isotropy_window_equals_reference(c):
@@ -146,11 +167,11 @@ def test_isotropy_window_equals_reference(c):
 # ------------------------------------------------------------------------------------------ T4
 def test_relink_matches_reference_and_fixture(c, fx, tables, relink_ids):
     arms, _, _ = fx
-    same(relink_ids, arms['T4_4_relink'])
+    golden(relink_ids, arms['T4_4_relink'])
     _, _, polys = tables
     ref = R.relinked_track_ids(R.relink_frames(c, polys))
     same(relink_ids, np.concatenate(ref))
-    same(c.track_id, arms['stored_track_id'])
+    golden(c.track_id, arms['stored_track_id'])
     ids, src = TR.track_ids(c)
     assert src == 'stored' and ids is c.track_id
     # the cold start differs from the warm-started stored IDs on some arms: 1,179 / 1,226 under the best mapping
@@ -164,7 +185,7 @@ def test_assignment_matrices(c, fx):
     TR.relink(c, assign_hook=lambda m, r, cc: mats.append(m.copy()))
     shapes = arms['lsa_first_shape']
     vals = np.concatenate([m.ravel() for m in mats[:len(shapes)]])
-    same(vals, arms['lsa_first_values'])
+    golden(vals, arms['lsa_first_values'])
     assert all(m.shape == tuple(s) for m, s in zip(mats, shapes))
 
 
@@ -212,12 +233,12 @@ def test_diagnostics_equal_reference_and_fixture(c, fx):
         pos = star[::int(key.rsplit('_g', 1)[1])] if '_g' in key else star
         got = np.concatenate([ids[fo[f]:fo[f + 1]] for f in pos])
         same(got, np.concatenate([np.asarray(x, np.int64) for x in ref['runs'][key]]))
-        same(got, fr[f'T4_5_labels_{key}'])
+        golden(got, fr[f'T4_5_labels_{key}'])
     for v in TR.VARIANTS:
         assert d[v]['by_state'] == {k: {kk: int(vv) for kk, vv in s.items()} for k, s in ref[v]['by_state'].items()}
         assert json.loads(json.dumps(d[v]['by_state'])) == meta['T4_5']['per_variant'][v]['by_state']
         assert d[v]['n_ids'] == meta['T4_5']['per_variant'][v]['n_ids']
-        same(d[v]['arm_lifetime_s'], fr[f'T4_5_arm_lifetime_s_{v}'])
+        golden(d[v]['arm_lifetime_s'], fr[f'T4_5_arm_lifetime_s_{v}'])
     assert {str(k): v for k, v in d['strides'].items()} == meta['T4_5']['strides_result']
     pooled = json.loads(json.dumps(TR.pooled([d], 'fused', tuple(STATES.values()))))
     assert pooled == meta['T4_5']['pooled_fused']
@@ -242,7 +263,7 @@ def test_fig4e_equals_reference_and_fixture(c, fx, tables, relink_ids):
                'arm_deformation': KI.arm_deformation(c, res.r0, relink_ids, lag='prev_frame_reset', kabsch='svd')}
         for name, v in got.items():
             same(v[win], np.asarray(ref['columns'][name]))
-            (golden_svd if name == 'arm_deformation' else same)(v[win], fr[f'fig4e_{name}'][sel])
+            (golden_svd if name == 'arm_deformation' else golden)(v[win], fr[f'fig4e_{name}'][sel])
         close(KI.arm_deformation(c, res.r0, relink_ids, lag='prev_frame_reset')[win], fr['fig4e_arm_deformation'][sel])
 
 
@@ -264,7 +285,7 @@ def test_fig4d_equals_reference_and_fixture(c, fx, tables, relink_ids):
         fsel = fr['fig4d_bout_id'] == i
         for name in ('fold_asymmetry', 'arm_length_spread', 'arm_curvature'):
             same(out[name][win], np.asarray(ref['columns'][name])[sel])
-            same(out[name][win], fr[f'fig4d_{name}'][fsel])
+            golden(out[name][win], fr[f'fig4d_{name}'][fsel])
         d = KI.arm_deformation(c, res.r0, relink_ids, lag='prev_frame_reset', shape_mask=(t >= lo - 1) & (t <= hi),
                                kabsch='svd')
         logd = np.array([np.nan if not np.isfinite(x) else float(np.log10(max(float(x), 1e-3))) for x in d])
@@ -285,7 +306,7 @@ def test_fig5_definitions_equal_reference_and_fixture(c, fx, relink_ids):
         out = compute_all(c, 'fig5', r0=r0, track='relink', kabsch='svd')
         for name in ('fold_asymmetry', 'arm_length_spread', 'arm_curvature', 'tip_motion', 'arm_deformation'):
             same(out[name], np.asarray(ref['rows'][name]))
-            (golden_svd if name == 'arm_deformation' else same)(out[name], fr[f'fig5_{tag}_{name}'])
+            (golden_svd if name == 'arm_deformation' else golden)(out[name], fr[f'fig5_{tag}_{name}'])
         out_c = compute_all(c, 'fig5', r0=r0, track='relink')
         close(out_c['arm_deformation'], fr[f'fig5_{tag}_arm_deformation'])
         for name in ('fold_asymmetry', 'arm_length_spread', 'arm_curvature', 'tip_motion'):
