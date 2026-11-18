@@ -182,3 +182,20 @@ def test_forward_reverse_reconciliation_is_deterministic() -> None:
     forward = [[0, 1], [0, 1], [0]]
     reverse = [[8, 9], [8, 9], [8]]
     assert reconcile_forward_reverse(forward, reverse) == {0: 8, 1: 9}
+
+
+def test_match_cost_cap_starts_new_id_instead_of_switching() -> None:
+    """With the default cap, a distant arm does not inherit a missing arm's track."""
+    near, far = _poly(10.0), _poly(10.0 + 100.0)   # 100 px: inside the 120-px gate, above the 90 cap
+    capped = FusedTracker(shape_gate=120.0, embed_weight=0.0)
+    uncapped = FusedTracker(shape_gate=120.0, embed_weight=0.0, max_match_cost=None)
+    for tracker in (capped, uncapped):
+        _step(tracker, 0, near)
+    assert _step(uncapped, 1, far) == [0]       # previous behaviour: handed over
+    assert _step(capped, 1, far) == [1]         # capped: a new ID
+    assert _step(capped, 2, near) == [0]        # the waiting track re-acquires its arm
+
+
+def test_match_cost_cap_must_be_positive() -> None:
+    with pytest.raises(ValueError):
+        FusedTracker(max_match_cost=0.0)

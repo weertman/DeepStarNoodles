@@ -1,0 +1,9 @@
+# Each machine's own job settings, and everything a run creates.
+fleet.toml
+runs/
+__pycache__/
+*.pyc
+
+# Local pip builds of the vendored inference package.
+build/
+*.egg-info/

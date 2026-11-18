@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "id": "starseg_selected_hydra_h0_gru128_seed0_20261028",
+  "created_date": "2026-10-28",
+  "path_base": "manifest_directory",
+  "target": {
+    "gpu": "NVIDIA GeForce RTX 5060",
+    "vram_gib": 8,
+    "ram_gib": 32
+  },
+  "models": {
+    "starseg": {
+      "path": "starseg.pt",
+      "sha256": "5929d8a9c1ae3cf9a8b5c3ab9b1372221fe9f8d6cadd5a94f020aac8c9c3fb53",
+      "architecture": "yolo26l-seg",
+      "run_id": "T1_l_P_adamw_e050_seed0",
+      "checkpoint_rule": "terminal_last",
+      "label_scheme": "P",
+      "target_class_name": "sunflower_star",
+      "scientific_name": "Pycnopodia_helianthoides",
+      "seed": 0,
+      "checkpoint_bytes": 63454149,
+      "checkpoint_parameters": 31373407,
+      "image_size": 1024,
+      "url": "https://github.com/weertman/deepstarnoodles-inference/releases/download/models-seed0-20261028/starseg.pt"
+    },
+    "hydra": {
+      "path": "hydra.pt",
+      "sha256": "aa056f933c1a0994fb299203aa20423c5208637d2eb4ede7e942abcc3aa91d7c",
+      "architecture": "dinov3_convnext_base",
+      "prefer_ema": true,
+      "checkpoint_rule": "terminal_last",
+      "seed": 0,
+      "checkpoint_bytes": 727321088,
+      "model_parameters": 90883602,
+      "output_channels": 18,
+      "embedding_dim": 8,
+      "image_size": 512,
+      "note": "The completed H0 training manifest specifies ConvNeXt-Base. A ConvNeXt-Large or ViT-L checkpoint is not substituted.",
+      "url": "https://github.com/weertman/deepstarnoodles-inference/releases/download/models-seed0-20261028/hydra.pt"
+    },
+    "tracer": {
+      "path": "tracer.pt",
+      "sha256": "e6c1506067fc5864ab1d0d648dec2f7932632017d952753cb68f80fed2c4812f",
+      "architecture": "noodle_tracer_grucell",
+      "hidden_size": 128,
+      "seed": 0,
+      "cycles": 30,
+      "optimizer_steps": 120000,
+      "checkpoint_bytes": 2326160,
+      "parent_checkpoint_sha256": "aa056f933c1a0994fb299203aa20423c5208637d2eb4ede7e942abcc3aa91d7c",
+      "endpoint_refinement": false,
+      "rgb_features": true,
+      "embedding_features": true,
+      "trace_params_source": "checkpoint",
+      "normalization_source": "checkpoint_buffers",
+      "calibration_status": "unverified",
+      "calibration_note": "Use the checkpoint's stored trace parameters. No calibration from an older released tracer is authorized by this manifest.",
+      "url": "https://github.com/weertman/deepstarnoodles-inference/releases/download/models-seed0-20261028/tracer.pt"
+    }
+  },
+  "preprocessing": {
+    "detector_image_size": 1024,
+    "crop_image_size": 512,
+    "context_scale": 2.0
+  },
+  "provenance": {
+    "normalizer_sha256": "e50e8ae9e5f3a9e495ca9167aa3850f3c74f4dbc5b1024d3c2f04404033c29a9",
+    "normalization_runtime_source": "tracer checkpoint dense_mean/dense_std buffers; external JSON is provenance only"
+  },
+  "validation": {
+    "full_pipeline_performance": "unmeasured",
+    "target_hardware_performance": "unmeasured",
+    "combined_pipeline_accuracy": "unverified",
+    "tracer_calibration": "unverified",
+    "note": "This pins artifacts for optimization experiments. It does not establish an accuracy selection, speed, memory fit, or deployment readiness for the combined pipeline."
+  }
+}

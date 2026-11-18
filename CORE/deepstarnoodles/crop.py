@@ -29,6 +29,8 @@ class CropConfig:
     iou: float = 0.7
     device: str = "cuda:0"
     track_max_jump_frac: float = 0.25
+    half: bool = False
+    rect: bool = True
 
 
 @dataclass(frozen=True)
@@ -194,6 +196,8 @@ class StarCropper:
             conf=self.config.conf,
             iou=self.config.iou,
             device=self.config.device,
+            half=self.config.half,
+            rect=self.config.rect,
             verbose=False,
         )[0]
         dets = _result_detections(
@@ -270,6 +274,8 @@ class TrackedStarCropper:
                     conf=self.config.conf,
                     iou=self.config.iou,
                     device=self.config.device,
+                    half=self.config.half,
+                    rect=self.config.rect,
                     verbose=False,
                 )[0]
             finally:

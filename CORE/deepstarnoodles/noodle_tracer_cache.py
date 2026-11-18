@@ -55,6 +55,56 @@ def validate_sleepy_split_contract(
         raise ValueError("split_group_id leakage in Sleepy tracer indexes")
 
 
+TRACER_COHORTS = ("sleepy", "non_sleepy", "all")
+# Image counts of the distributed grouped splits (seed 20260718). The complete
+# "all" cohort is not count-checked so that subset indexes can be used for tests.
+EXPECTED_COHORT_COUNTS = {
+    "sleepy": {"train": 403, "validation": 34, "test": 63},
+    "non_sleepy": {"train": 3659, "validation": 444, "test": 439},
+}
+
+
+def cohort_rows(index_path: str | Path, cohort: str) -> list[dict[str, str]]:
+    """Rows of one split index belonging to a source-family cohort.
+
+    ``sleepy`` keeps ``source_family == "sleepy_stars"``, ``non_sleepy`` keeps
+    every other family, and ``all`` keeps the complete index. Row order is the
+    index order, which seeds the per-row augmentation of refreshed training.
+    """
+    if cohort not in TRACER_COHORTS:
+        raise ValueError(f"unknown tracer cohort {cohort!r}; choose from {TRACER_COHORTS}")
+    with Path(index_path).open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+    if cohort == "all":
+        return rows
+    if cohort == "sleepy":
+        return [row for row in rows if row.get("source_family") == "sleepy_stars"]
+    return [row for row in rows if row.get("source_family") != "sleepy_stars"]
+
+
+def validate_cohort_splits(
+    rows: dict[str, Sequence[dict[str, str]]],
+    cohort: str,
+    *,
+    expected_counts: dict[str, int] | None = None,
+) -> None:
+    """Check split counts, group IDs, group disjointness, and cohort membership."""
+    expected = expected_counts if expected_counts is not None else EXPECTED_COHORT_COUNTS.get(cohort)
+    actual = {split: len(rows[split]) for split in ("train", "validation", "test")}
+    if expected is not None and actual != expected:
+        raise ValueError(f"{cohort} split counts changed: {actual} != {expected}")
+    if any(not row.get("split_group_id") for split_rows in rows.values() for row in split_rows):
+        raise ValueError(f"missing split_group_id in {cohort} tracer indexes")
+    groups = [split_group_ids(rows[name]) for name in ("train", "validation", "test")]
+    if groups[0] & groups[1] or groups[0] & groups[2] or groups[1] & groups[2]:
+        raise ValueError(f"split_group_id leakage in {cohort} tracer indexes")
+    families = {row.get("source_family") for split_rows in rows.values() for row in split_rows}
+    if cohort == "sleepy" and families - {"sleepy_stars"}:
+        raise ValueError("a non-Sleepy row entered the Sleepy cohort")
+    if cohort == "non_sleepy" and "sleepy_stars" in families:
+        raise ValueError("a Sleepy Stars row entered the non-Sleepy cohort")
+
+
 def prepared_arms_from_row(row: dict[str, str], image_size: int = 512) -> list[np.ndarray]:
     shapes = json.loads(resolve_repo_path(row["shapes_path"]).read_text(encoding="utf-8"))
     sx = image_size / float(row["width"])

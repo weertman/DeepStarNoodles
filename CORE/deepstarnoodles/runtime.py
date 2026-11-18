@@ -73,6 +73,7 @@ class StarArmTrackerRegistry:
         shape_gate: float = 120.0,
         embed_weight: float = 2.0,
         max_age: int = 16,
+        max_match_cost: float | None = 90.0,
         star_max_age: int = DEFAULT_STAR_TRACK_MAX_AGE,
         tracker_factory: Callable[[], FusedTracker] | None = None,
     ) -> None:
@@ -84,6 +85,7 @@ class StarArmTrackerRegistry:
                 shape_gate=shape_gate,
                 embed_weight=embed_weight,
                 max_age=max_age,
+                max_match_cost=max_match_cost,
             )
         )
         self._trackers: dict[int, FusedTracker] = {}

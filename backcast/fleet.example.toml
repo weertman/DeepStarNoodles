@@ -1,0 +1,102 @@
+# Copy to fleet.toml and edit. Everything the lab machine needs to know lives here.
+# The API key does not: export RUNPOD_API_KEY=... (runpod.io > Settings > API Keys).
+
+[footage]
+# Directories to scan recursively. Output mirrors these paths under [output] dir.
+roots = ["/path/to/footage"]
+extensions = [".mp4", ".mkv", ".mov", ".avi"]
+# Optional: skip files whose path (relative to the root's parent) matches a pattern.
+# exclude = ["*/calibration/*"]
+
+[output]
+# One <video>.jsonl.zst per video, plus _manifest.jsonl recording which GPU annotated what.
+dir = "/path/to/annotations"
+# Work list, logs and this job's SSH key. Keep it: rerunning `run` resumes from it.
+run_dir = "runs/backcast"
+
+[fleet]
+pods = 5                  # How many pods to keep working at once. Cost barely changes; time divides by this.
+max_total_usd = 300.0     # Hard stop. Pods are terminated here; rerun with a higher limit to continue.
+cloud = "SECURE"          # COMMUNITY is about half the price, but stock is thin and pods run on third-party hosts.
+# Outputs differ slightly between chip families, with no visible bias (docs/speed_test.md). "any" uses whatever is in
+# stock. "ada", "ampere" or "blackwell" rents only that family. Changing it later doesn't redo finished videos, and it
+# ends any pod of another family at the next `run`.
+gpu_family = "any"
+upload_limit_mbit = 400   # Total across all pods. Leave room on your link for other users.
+uploads_per_pod = 3
+ready_videos = 4          # Videos kept waiting on each pod. Raise it if `status` shows pods waiting for work.
+lease_hours = 12          # RunPod ends each pod after this even if this machine dies; the fleet rotates pods before then.
+
+# GPU types in order of preference: the fleet rents the first one in stock at or below its cap.
+# Ordered by measured cost per frame (docs/speed_test.md). The caps sit a little above the prices on 2026-10-31 (the 5090's on 2026-11-08).
+# A pilot on your footage gives the real rates; `expected_images_per_second` only feeds the estimates in `plan`.
+# RUNPOD_GPU_TABLE_START
+[[fleet.gpu]]
+id = "NVIDIA GeForce RTX 5090"   # Cheapest per frame: 58 images/s at $1.19/h on 2026-11-08. Stock is often low.
+family = "blackwell"
+max_usd_per_hour = 1.30
+processes = 12
+expected_images_per_second = 58
+
+[[fleet.gpu]]
+id = "NVIDIA GeForce RTX 4090"
+family = "ada"
+max_usd_per_hour = 0.95
+processes = 8
+expected_images_per_second = 41
+
+[[fleet.gpu]]
+id = "NVIDIA GeForce RTX 3090"
+family = "ampere"
+max_usd_per_hour = 0.55
+processes = 8
+expected_images_per_second = 21
+
+[[fleet.gpu]]
+id = "NVIDIA RTX PRO 4500 Blackwell Server Edition"
+family = "blackwell"
+max_usd_per_hour = 0.78
+processes = 6
+expected_images_per_second = 27.5
+
+[[fleet.gpu]]
+id = "NVIDIA RTX A6000"
+family = "ampere"
+max_usd_per_hour = 0.65
+processes = 8
+expected_images_per_second = 22
+
+[[fleet.gpu]]
+id = "NVIDIA L40S"
+family = "ada"
+max_usd_per_hour = 1.15
+processes = 8
+expected_images_per_second = 40.5
+
+[[fleet.gpu]]
+id = "NVIDIA RTX 6000 Ada Generation"
+family = "ada"
+max_usd_per_hour = 1.05
+processes = 8
+expected_images_per_second = 36
+
+[[fleet.gpu]]
+id = "NVIDIA A40"
+family = "ampere"
+max_usd_per_hour = 0.65
+processes = 8
+expected_images_per_second = 19
+
+# The fastest pod, at 70% more per frame than the 4090. Uncomment it for a hard deadline.
+# [[fleet.gpu]]
+# id = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+# family = "blackwell"
+# max_usd_per_hour = 2.60
+# processes = 10
+# expected_images_per_second = 67
+# RUNPOD_GPU_TABLE_END
+
+[pod]
+min_vcpu = 8
+min_memory_gb = 32
+container_gb = 80         # Local disk for the rolling video queue. Raise it for very large videos.

@@ -105,15 +105,20 @@ DATA_ROOT = REPO_ROOT / "DATA"
 RUNS_ROOT = REPO_ROOT / "RUNS"
 MODELS_ROOT = REPO_ROOT / "MODELS"
 
+# Frozen arm dataset, as laid out by
+# `hf download weertman/deepstarnoodles-data --repo-type dataset --local-dir DATA`.
+DEFAULT_DATASET_ROOT = DATA_ROOT / "noodles_final_20261026"
+# Combined index of the earlier dataset layout (Hugging Face revision
+# 9590c93f); read only by the legacy 80/20 split and build_ignore_masks.
 DEFAULT_DENSE_INDEX = (
     DATA_ROOT / "deepstarnoodles" / "deepstarnoodles_dense_train_index.csv"
 )
-DEFAULT_SPLITS_ROOT = DATA_ROOT / "deepstarnoodles" / "splits"
+DEFAULT_SPLITS_ROOT = DEFAULT_DATASET_ROOT / "splits"
 DEFAULT_TRAIN_INDEX = DEFAULT_SPLITS_ROOT / "train_index.csv"
 DEFAULT_VALIDATION_INDEX = DEFAULT_SPLITS_ROOT / "validation_index.csv"
 DEFAULT_TEST_INDEX = DEFAULT_SPLITS_ROOT / "test_index.csv"
 DEFAULT_ANNOTATED_INDEX = DEFAULT_DENSE_INDEX
-DEFAULT_IGNORE_SHAPES_DIR = DATA_ROOT / "deepstarnoodles" / "ignore_masks"
+DEFAULT_IGNORE_SHAPES_DIR = DEFAULT_DATASET_ROOT / "ignore_masks"
 DEFAULT_STARSEG_DATA = DATA_ROOT / "starseg" / "data.yaml"
 DEFAULT_BOTSORT_CONFIG = REPO_ROOT / "config" / "star_tracking" / "botsort.yaml"
 
@@ -121,14 +126,13 @@ DEFAULT_DINOV3_REPO = REPO_ROOT / "external" / "dinov3"
 DEFAULT_DINOV3_CONVNEXT_BASE_CHECKPOINT = (
     MODELS_ROOT / "dinov3" / "dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth"
 )
-DEFAULT_STARSEG = MODELS_ROOT / "starseg" / "starseg_best.pt"
+# Published models, as laid out by
+# `hf download weertman/deepstarnoodles --local-dir MODELS`.
+DEFAULT_STARSEG = MODELS_ROOT / "starseg_binary.pt"
+DEFAULT_HYDRA_CHECKPOINT = MODELS_ROOT / "hydra.pt"
+DEFAULT_TRACER_CHECKPOINT = MODELS_ROOT / "tracer.pt"
+# Earlier models (Hugging Face revision 0881c427), not the models of the paper.
 DEFAULT_HYDRA_PARENT_CHECKPOINT = MODELS_ROOT / "hydra" / "epoch_060.pt"
-DEFAULT_HYDRA_CHECKPOINT = MODELS_ROOT / "hydra" / "endpoint_mse_best.pt"
-DEFAULT_TRACER_CHECKPOINT = (
-    MODELS_ROOT
-    / "tracer"
-    / "noodle_tracer_seed20260807_endpoint_mse_calibrated.pt"
-)
 DEFAULT_TEMPORAL_VAE_CHECKPOINT = (
     MODELS_ROOT
     / "temporal_vae"

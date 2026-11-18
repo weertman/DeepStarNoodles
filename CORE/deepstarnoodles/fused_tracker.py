@@ -3,7 +3,7 @@
 """FusedTracker: shape + motion + identity association for arm tracking.
 
 Released video deploy uses this tracker with temporal lifecycle modes off
-(shape_gate, embed_weight, and max_age only).
+(shape_gate, embed_weight, max_age and max_match_cost only).
 
 1. **Association is a polyline, not a point.** The decoder produces a full
    base->tip polyline. Association cost is a polyline shape distance, so two
@@ -13,7 +13,17 @@ Released video deploy uses this tracker with temporal lifecycle modes off
    at 2 fps this HURT identity purity (switch rate 0.0123 -> 0.0078 with it
    off) -- frame-to-frame tip displacement is mostly decode noise at this frame
    rate -- so it is disabled by default. It may help at higher frame rates.
-3. **Embedding EMA drift.** The identity embedding is a weighted tiebreaker,
+3. **Unmatched is an option.** Assignment may leave an arm or a track
+   unmatched: a pairing is only made if its cost is below ``max_match_cost``
+   (default 90); otherwise the arm starts a new ID and the track waits up to
+   ``max_age`` updates. Without this option Hungarian assignment pairs every arm
+   it can under the generous shape gate, so when an arm is missed for a frame its
+   track is handed to a neighbouring arm (an identity switch). On 24 h of
+   Sleepy Stars and flipping recordings the option cut abrupt tip jumps (> 30
+   degrees about the body in one frame) from 5.3 to 1.9 per 1,000 links at 1 Hz,
+   at the price of more, shorter IDs (2.5 -> 3.6 IDs per arm per 10 min). Pass
+   ``max_match_cost=None`` for the previous behaviour.
+4. **Embedding EMA drift.** The identity embedding is a weighted tiebreaker,
    not the primary gate, and a track's embedding is only updated when the
    observation agrees with it (outlier-gated), so one bad association cannot
    walk a track's identity onto another arm.
@@ -195,8 +205,12 @@ class FusedTracker:
                  embed_update_gate: float = 1.0, max_age: int = 16,
                  vel_alpha: float = 0.0, embed_alpha: float = 0.4,
                  max_vel_px: float = 30.0,
+                 max_match_cost: float | None = 90.0,
                  temporal: TemporalTrackerConfig | None = None):
+        if max_match_cost is not None and max_match_cost <= 0:
+            raise ValueError("max_match_cost must be positive or None")
         self.shape_gate = shape_gate
+        self.max_match_cost = max_match_cost  # legacy (released) path only
         self.embed_weight = embed_weight
         self.embed_update_gate = embed_update_gate
         self.max_age = max_age
@@ -382,7 +396,21 @@ class FusedTracker:
                     continue
                 ed = float(np.linalg.norm(embeds[i] - t['embed']))
                 cost[i, j] = sd + self.embed_weight * ed
-        rr, cc = linear_sum_assignment(cost)
+        if self.max_match_cost is None:
+            rr, cc = linear_sum_assignment(cost)
+        else:
+            # Augment with "unmatched" options at half the cap each, so a pairing
+            # is only made when it is cheaper than leaving both sides unmatched.
+            m = len(active)
+            half = self.max_match_cost / 2.0
+            full = np.full((n + m, m + n), big, dtype=np.float64)
+            full[:n, :m] = cost
+            full[:n, m:][np.diag_indices(n)] = half
+            full[n:, :m][np.diag_indices(m)] = half
+            full[n:, m:] = 0.0
+            rr, cc = linear_sum_assignment(full)
+            keep = (rr < n) & (cc < m)
+            rr, cc = rr[keep], cc[keep]
         labels = [-1] * n
         matched = set()
         for i, j in zip(rr, cc):
