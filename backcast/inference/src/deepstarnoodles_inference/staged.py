@@ -144,7 +144,7 @@ def run_shard(args, model_paths, paths, frame_start, spool, timer, state):
         release(timer.device)
 
     with timer.stage("tracer_load_decode_output"):
-        tracer, trace_params, _, _ = load_noodle_tracer_checkpoint(str(model_paths["tracer"]), device=args.device)
+        tracer, trace_params, _, _ = b.load_tracer(model_paths, args.device)
         if tracer.hidden_size != 128:
             raise ValueError("expected GRU128")
         arm_count = 0

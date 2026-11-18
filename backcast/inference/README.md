@@ -8,10 +8,11 @@ The trained models are YOLO26-L segmentation, **DINOv3 ConvNeXt-Base** and a GRU
 |---|---|
 | This README | Installing, getting the models and the commands to run |
 | [docs/options.md](docs/options.md) | Every speed, scheduling and live option, including the ones measurement rejected |
+| [docs/track-videos.md](docs/track-videos.md) | Star and arm IDs after annotation: the star trackers, their parameters and guarantees |
 | [docs/representations.md](docs/representations.md) | Turning output into the paper's polyline representations |
 | [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) | Every measurement, with rates per GPU type, output agreement and memory |
 
-**Version note.** This branch is 0.5.0.dev12. It writes output schema 4. Schema 3 (0.5.0.dev11) added each star's body origin, support area and centroid and each frame's time, along with the `representations` command. Schema 4 adds each star's mouth, madreporite and butthole positions and probabilities, and 0.5.0.dev12 adds the `track-videos` command. The published container image is still 0.4.0, so it lacks `serve-videos`, `track-videos`, `representations` and most options in the commands below. Install from source or build the image from this repository, as shown next.
+**Version note.** This branch is 0.5.0.dev14. It writes output schema 4. Schema 3 (0.5.0.dev11) added each star's body origin, support area and centroid and each frame's time, along with the `representations` command. Schema 4 adds each star's mouth, madreporite and butthole positions and probabilities, and 0.5.0.dev12 adds the `track-videos` command. 0.5.0.dev13 changes only the CPU commands: `track-videos` assigns star IDs with a tracker built for 1–2 fps records by default, and both it and `representations` refuse or flag incomplete inputs. `serve-videos`, `live` and `live-replay` output is unchanged. 0.5.0.dev14 lets a model manifest set the tracer's invalid-seed threshold and adds manifests for three detectors (see [Get the models](#get-the-models)); with an earlier manifest the output is unchanged. The published container image is still 0.4.0, so it lacks `serve-videos`, `track-videos`, `representations` and most options in the commands below. Install from source or build the image from this repository, as shown next.
 
 ## Install
 
@@ -38,16 +39,28 @@ Inside the container the same commands run as `docker run --rm --gpus all --shm-
 
 ## Get the models
 
-The checkpoints are published in [models-seed0-20261028](https://github.com/weertman/deepstarnoodles-inference/releases/tag/models-seed0-20261028), about 793 MB in total. This downloads them and verifies their SHA-256 hashes:
+The checkpoints are published in [models-20261117](https://github.com/weertman/deepstarnoodles-inference/releases/tag/models-20261117) and, with the same file names and hashes, in the [Hugging Face model repository](https://huggingface.co/weertman/deepstarnoodles). One Hydra and one tracer are shared by three detectors, which differ in how the objects that are not sunflower sea stars were labelled in training:
+
+| Manifest | Detector classes | Test precision | Test recall | Test F1 |
+|---|---|---|---|---|
+| `manifest.json` | 2: sunflower sea star, anything else annotated (the detector of the paper) | 0.920 | 0.903 | 0.911 |
+| `manifest.fine.json` | 37: sunflower sea star, 26 other sea star species, urchins, bivalves, sand dollars, dead prey and unidentified animals | 0.941 | 0.902 | 0.921 |
+| `manifest.coarse.json` | 4: sunflower sea star, other sea star, live prey, dead prey | 0.934 | 0.909 | 0.921 |
+
+The scores are for sunflower sea stars on the 1,249 test images of the frozen detection dataset, seed 0, matched one to one at a mask IoU of at least 0.5 and a confidence of at least 0.25. Recall is lower in field images: 0.67, 0.66 and 0.69 without the Prince William Sound cruise, in the order of the table. Each manifest records the scores by image source. Whichever detector is used, only detections of the sunflower sea star class are cropped and traced.
+
+This downloads one detector with Hydra and the tracer, about 793 MB, and verifies the SHA-256 hashes:
 
 ```bash
 curl -fL -o manifest.json \
-  https://github.com/weertman/deepstarnoodles-inference/releases/download/models-seed0-20261028/manifest.json
+  https://github.com/weertman/deepstarnoodles-inference/releases/download/models-20261117/manifest.json
 deepstarnoodles-inference fetch-models --models manifest.json --destination models
 deepstarnoodles-inference verify-models --models models/
 ```
 
-`models/` must not already exist. Nothing is downloaded implicitly during inference. Checkpoint loading uses PyTorch serialization, so only load trusted weights whose hashes match the manifest.
+For another detector, download `manifest.fine.json` or `manifest.coarse.json` in place of `manifest.json`. `models/` must not already exist. Nothing is downloaded implicitly during inference. Checkpoint loading uses PyTorch serialization, so only load trusted weights whose hashes match the manifest.
+
+The tracer record of these manifests sets `invalid_seed_threshold` to 0.6, the value chosen on the validation split and used in the paper. The checkpoint itself stores no threshold, so a manifest without the field traces every seed. The earlier release [models-seed0-20261028](https://github.com/weertman/deepstarnoodles-inference/releases/tag/models-seed0-20261028) has the same Hydra and tracer with a one-class detector and no threshold; the measurements in [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) used it.
 
 ## Annotate videos
 
@@ -76,19 +89,20 @@ Compiled outputs are not byte-identical to the uncompiled pipeline, but the diff
 
 ## Track stars and arms afterwards
 
-`track-videos` gives the stars and arms in `serve-videos` records persistent IDs, as live replay does during inference. BoT-SORT follows each frame's star boxes. Then each star's arm tracker follows its arms, measured from the star's saved `body_origin_model`. It needs no GPU, model weights or video, and it runs one video per process:
+`track-videos` gives the stars and arms in `serve-videos` records IDs that persist through a video. It needs no GPU, model weights or video, and it runs one video per process:
 
 ```bash
 deepstarnoodles-inference track-videos out/ --output tracked/ --jobs 8
 ```
 
-- **Inputs:** `.jsonl` or `.jsonl.zst` files, or directories, which are searched recursively and mirrored under `--output`. Compressed files need `zstd` on `PATH`.
-- **Resuming:** videos already tracked are skipped, so a rerun picks up where it stopped.
-- **What it writes:** each star gets `star_track_id`, and each arm gets `track_id`, scoped to its star. `arm_index` stays.
-- **Unconfirmed stars:** live replay only crops stars BoT-SORT has confirmed, which leaves out each star in the first frame it appears in after a video's first frame. Those detections move to the frame's `untracked_stars`, so `stars` matches live replay, nothing is lost, and the output feeds `representations` without `--untracked`.
-- **No camera-motion correction:** BoT-SORT normally corrects for camera motion using the frames, which aren't available here. With a fixed camera that changes little.
+- **Star IDs:** from 0.5.0.dev13 a post-hoc Hungarian tracker assigns them by default. It matches boxes to each star's predicted position on their size-normalised distance and gives every star an ID in the first record it appears in. Where two stars could be confused (a crossing, merged boxes, a star coming back next to another), it starts new IDs rather than risk giving one animal's frames to another. A star out of view keeps its ID for up to 30 s if it comes back near where it was with no other star close. `--star-param KEY=VALUE` changes a parameter. On the rehearsal's flipping clips, one star kept 1 and 2 IDs, where BoT-SORT gave it 7 and 11; on synthetic multi-star scenes built from real detections, detections on another animal's ID fell from 6.3% to 1.0% in dense crowds.
+- **The 0.5.0.dev12 behaviour:** `--star-tracker botsort` restores it byte for byte. It runs BoT-SORT as live replay does, and each new star's first detection waits in `untracked_stars` until BoT-SORT confirms it.
+- **Arm IDs:** each star's arm tracker follows its arms, measured from the star's saved `body_origin_model`. They are the released tracker's IDs, identical to live replay's for the same star, and scoped to their star. `arm_index` stays.
+- **What it writes:** `star_track_id` on each star and `track_id` on each arm. Detections without a star ID go to `untracked_stars`, so nothing is dropped and the output feeds `representations` without `--untracked`. With the default tracker that is only the less confident of two duplicate boxes. Each record also ends with `star_tracking`: the tracker, its parameters and the package version. Each video's summary is appended to `_track-videos.log` in `--output`.
+- **Inputs:** `.jsonl` or `.jsonl.zst` files, or directories, which are searched recursively (following directory symlinks) and mirrored under `--output`. Compressed files need `zstd` on `PATH`. Videos already tracked are skipped, so a rerun picks up where it stopped. Another run's output inside an input directory is skipped, and finding no input is an error.
+- **Refusals:** tracked records (`track-videos`, `live` or `live-replay` output) are refused, not tracked again. So are files without records, records from before 0.5.0.dev11, which have no body origin, and one video in two formats. A truncated file is reported with its line, a file with fewer records than the fleet's `_manifest.jsonl` lists is an error, and a failed video leaves no `.part` file.
 
-On a 4-minute, 1 fps lab clip, both ways kept one star ID throughout. An arm changed ID between frames 5.6% of the time afterwards against 5.4% live. Records from before 0.5.0.dev11 have no body origin, so the command refuses them.
+The default tracker has been checked on two single-star clips, synthetic lab stills and synthetic multi-star scenes, not on real multi-star 1 fps footage. In crowds it gives more, shorter IDs than BoT-SORT. With no appearance cue, it can give one ID to two animals when one leaves and another arrives at the same spot. [docs/track-videos.md](docs/track-videos.md) has the parameters, the guarantees and the known costs.
 
 ## Annotate images
 
@@ -140,6 +154,7 @@ Each line of a `.jsonl` file is one frame:
 - After its arms, a star has `body_origin_model` (`[x, y]`), the runtime body centre that arm association uses, and `body_origin_code`, which says where it came from: 0 for the mouth peak, 1 for the support > 0.3 centroid and 2 for the crop centre. It also has `support_area_model_px`, the number of support > 0.5 pixels, and `support_centroid_model`, their mean `[x, y]`, which is `null` when the area is 0.
 - Last, a star has `landmarks_model`, which maps `mouth`, `madreporite` and `butthole` to `[x, y, p]`. Each is the maximum of Hydra's heatmap for that landmark, with its probability. Nothing is thresholded, so a landmark the model can't see has a low `p`, and its position means little. A non-finite map gives `null`.
 - Each frame ends with `time_s`, `fps` and `schema_version` (4). `time_s` is `frame / fps`. The rate comes from the video for `serve-videos` and `live --video`, and from `--fps` for image indexes. Without a rate, as for a camera, both are `null`. For image indexes `time_s` counts from the first CSV row, not from the start of the video: stills cut from mid-video need their start time added.
+- `track-videos` appends `untracked_stars` to each frame after `schema_version`, and its default star tracker then appends `star_tracking` (see [docs/track-videos.md](docs/track-videos.md)).
 
 Coordinates are in source pixels unless the name says crop or model. Model coordinates are pixels of the 512-pixel crop.
 
@@ -154,7 +169,9 @@ deepstarnoodles-inference representations outputs/live/predictions.jsonl --outpu
 deepstarnoodles-inference representations stream_out/ --output reps/ --untracked single --preset fig6_flipping
 ```
 
-It writes one container per star, each preset's outputs, optional CSV tables and a manifest. Archive and `serve-videos` records carry no star IDs. Run [`track-videos`](#track-stars-and-arms-afterwards) on them first, or pass `--untracked single` for one animal per video, or `--untracked detections`. Records from 0.5.0.dev10 and earlier give only the outputs that need no body origin. [docs/representations.md](docs/representations.md) covers presets, R0 context and the output layout.
+It writes one container per star, each preset's outputs, optional CSV tables and a manifest. Archive and `serve-videos` records carry no star IDs. Run [`track-videos`](#track-stars-and-arms-afterwards) on them first, or pass `--untracked single` for one animal per video, or `--untracked detections`. Records from 0.5.0.dev10 and earlier give only the outputs that need no body origin.
+
+Files found in a directory are named by their relative path, so `camA/C0001.mp4` and `camB/C0001.mp4` stay apart. Frames with no record become no-star rows instead of being bridged. A truncated file, including a truncated `.zst` and a file shorter than the fleet's `_manifest.jsonl` says, is an error. Inputs that lose data get the status `warning` in the manifest, and inputs with no star get `empty`. `--overwrite` deletes the earlier run's outputs first. [docs/representations.md](docs/representations.md) covers presets, R0 context, the output layout and these rules.
 
 ## Known issues
 

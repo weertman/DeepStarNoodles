@@ -1,0 +1,693 @@
+% S1 Text, part 1: datasets, models, decoding, scoring, detector and tracer results.
+
+This text gives the settings needed to repeat the training, decoding and scoring of the three published models.
+The models are the detector (StarSeg), the field network (Hydra) and the tracer (Noodle Tracer).
+Together they trace every arm of the sunflower sea star (\textit{Pycnopodia helianthoides}) in images and video.
+All results come from one training campaign on two frozen datasets, and the published models are seed 0 of that campaign.
+Precision, recall and F1 are proportions between 0 and 1.
+Differences between tracer configurations are given in percentage points.
+Distances are in pixels (px) of the 512 $\times$ 512 crop that the field network reads, unless stated otherwise.
+An acquisition group is the unit by which the arm-annotation dataset was split.
+A capture group is the unit by which the detection dataset was split.
+Neither unit is an animal.
+
+\section*{Datasets}
+
+\subsection*{Arm-annotation dataset}
+
+The arm-annotation dataset holds 5,093 square RGB crops, each showing one sunflower sea star (Table~\ref{tab:armdata}).
+Crops are stored at native resolution.
+The median side is 519~px (quartiles 174 and 1,264~px; range 71 to 13,000~px).
+The models read each crop resized to 512 $\times$ 512~px, and scoring uses the same canvas.
+
+Annotation was done in CVAT~\cite{cvat2026computer}.
+Each arm is one polyline ordered from the disc to the tip, and the order defines progress along the arm.
+The dataset has 57,055 arm polylines, with a median of 10 per image (range 3 to 28).
+Points mark the mouth (399 points), the madreporite (1,254) and the anus (4,693) on the images where they were annotated.
+\gap{state the rule for marking landmarks, the number of annotators and any agreement check}
+Neighbouring stars that were not annotated are covered by ignore polygons (515 polygons in 329 images).
+Pixels inside these polygons do not enter the loss of the field network.
+
+The crops come from seven sources (Table~\ref{tab:armdata}).
+Two sources are crops of single stars from images of the two annotation projects of the detection dataset (\texttt{starseg} and \texttt{starseg\_lab}).
+Two smaller sources are named \texttt{arm\_pit} and \texttt{axis\_detector}. \gap{describe the \texttt{arm\_pit} and \texttt{axis\_detector} image sets}
+Sleepy Stars, StarDome and StarTrack are laboratory camera rigs. \gap{cameras, lenses, frame rates and lighting of each source}
+For Sleepy Stars a video frame was kept only if a detector found exactly one sunflower sea star with a confidence of at least 0.90.
+The detector also had to find the star in both adjacent frames, 1~s apart, with a confidence of at least 0.75.
+The crop is centred on the bounds of the detected polygon, its side is 1.4 times the larger polygon dimension, and it had to fit inside the frame.
+\gap{crop rule for the crops from detector images, StarDome and StarTrack}
+
+The split unit is the acquisition group.
+A group is the set of images that share an exact source key, a session key or identical bytes.
+Whole groups were allocated to one split with seed 20261026, which gave 394 training, 180 validation and 211 test groups.
+No group appears in two splits.
+Groups are recording sessions, image clusters or annotation tasks.
+They are not animals, and the same animal can appear in more than one split. \gap{number of animals in each source, if known}
+StarDome and StarTrack each contribute 70 training and 30 test images and no validation image.
+The StarTrack test images are all images of camera C and form one group; cameras A, B and D are in training.
+The StarDome test groups are single images.
+For both sources the independence of test and training animals was not verified.
+
+Before the split was frozen we searched for near-duplicate images across splits.
+We found 17 cross-split pairs with an identical perceptual hash.
+Their 12 connected components touched 28 groups, and we removed 149 images (140 training, 9 test).
+The split went from 4,202, 478 and 562 images to 4,062, 478 and 553.
+
+Of the 553 test images, 493 (180 groups) come from the four sources that also have validation images.
+We call them the development test set, because they were scored several times while the method was developed.
+The development test set is the primary cohort for the comparisons between tracer configurations.
+Three further caveats apply to it.
+About 47 test images have a near-identical training image in another group, because the removal step used identical hashes only.
+Two audits counted 217 and 218 test crops that were cut from images in the training split of the detection dataset; both counts predate the final version of that dataset.
+The acquisition groups do not separate animals.
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{Arm-annotation dataset by source and split.} Cells give images, with acquisition groups in parentheses.}
+\label{tab:armdata}
+{\small
+\begin{tabular}{|l|r|r|r|r|r|}
+\hline
+\textbf{Source} & \textbf{Training} & \textbf{Validation} & \textbf{Test} & \textbf{All images} & \textbf{All arms} \\ \thickhline
+Detector images, \texttt{starseg} & 2,366 (158) & 255 (99) & 248 (99) & 2,869 & 31,304 \\ \hline
+Detector images, \texttt{starseg\_lab} & 732 (124) & 138 (73) & 138 (72) & 1,008 & 8,950 \\ \hline
+\texttt{arm\_pit} & 394 (19) & 51 (5) & 44 (4) & 489 & 8,094 \\ \hline
+\texttt{axis\_detector} & 27 (1) & 0 & 0 & 27 & 400 \\ \hline
+Sleepy Stars & 403 (19) & 34 (3) & 63 (5) & 500 & 5,818 \\ \hline
+Subtotal, development sources & 3,922 (321) & 478 (180) & 493 (180) & 4,893 & 54,566 \\ \thickhline
+StarDome & 70 (70) & 0 & 30 (30) & 100 & 1,387 \\ \hline
+StarTrack & 70 (3) & 0 & 30 (1) & 100 & 1,102 \\ \thickhline
+All & 4,062 (394) & 478 (180) & 553 (211) & 5,093 & 57,055 \\ \hline
+Arm polylines & 46,569 & 4,801 & 5,685 & & 57,055 \\ \hline
+Arms per image, median (range) & 11 (3 to 28) & 9 (4 to 23) & 10 (3 to 22) & & \\ \hline
+\end{tabular}
+}
+\begin{flushleft}\small
+The test images of the four development sources that have test images form the development test set (493 images, 180 groups).
+The subtotal row sums the rows above it.
+Source names in typewriter type are the labels used in the dataset files.
+\end{flushleft}
+\end{table}
+
+\subsection*{Detection dataset}
+
+The detection dataset holds 7,978 whole images with 26,394 instance masks, annotated in CVAT.
+There are 37 classes: the sunflower sea star (8,432 masks), 27 other sea star classes (26 species and one class for unknown species), six classes of live prey and three of dead prey.
+We trained with four label schemes on the same images.
+Scheme F keeps all 37 classes.
+Scheme C has four classes (sunflower sea star, other sea star, live prey, dead prey).
+Scheme B has two classes (sunflower sea star, other object).
+Scheme P labels sunflower sea stars only and leaves other objects unlabelled; the images are kept.
+Images were resized so that the longest side is at most 1,024~px and stored as JPEG at quality 95.
+Scoring uses the original annotation shapes in source pixel coordinates.
+
+Each image received a capture group by a rule specific to its source.
+Examples are one group per web photograph, per capture day, per source video, per camera and trial, or per rig.
+Groups were then merged across exact duplicate files (169 links) and across near duplicates (2,105 links).
+Near duplicates were defined by a 256-bit difference hash with a Hamming distance of at most 8.
+Merging reduced 3,607 capture groups to 3,494.
+Whole merged groups were allocated to one split with seed 20261023 (Table~\ref{tab:detdata}).
+The split has 5,600 training, 1,129 validation and 1,249 test images in 2,426, 548 and 520 groups.
+Sunflower sea star masks number 5,806, 1,213 and 1,413.
+Images without a sunflower sea star number 2,771, 642 and 550.
+Of these, 84 training images and 8 test images carry no annotation at all, and each was checked by eye.
+The validation split has no annotation-free image, so false alarms on empty scenes cannot be measured there.
+
+We group the images in two ways.
+S1 Fig uses five image domains: laboratory, field survey video, captive tanks outside the laboratory, centred field photographs and public web photographs.
+The evaluation uses a coarser view of the test split: Lab, Field and Web.
+Field is the union of the three middle domains (395 test images, 8 groups, 427 stars).
+We split Field further into PWS (Prince William Sound, Alaska) and field without PWS, and we never pool the two.
+
+PWS is a set of 878 diver photographs, each framed on one sunflower sea star.
+They were taken with an Olympus TG-6 camera on dive surveys during a two-night cruise in the sound, on three days from 21 to 23 September 2023.
+The first day is the test split (243 images, one capture group, 38 individual stars).
+The other two days are in training (635 images with 646 masks).
+Training and test images therefore come from one cruise, and the PWS score is a within-cruise result.
+No individual star is in both splits by its field identifier, but identifiers were not matched across days.
+Of the PWS images, 523 were drafted from box proposals with the SAM2 segmentation model and then annotated and checked by the author in CVAT.
+
+Two further caveats apply.
+Of the 7,978 images, 7,881 were used in earlier fits of the detector, so the test split is held out for this campaign only.
+The origin of the web photographs is not recorded. \gap{origin and licences of the web photographs and contributed photographs}
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{Detection dataset by image domain and split.} Stars are sunflower sea star masks; groups are capture groups after merging of duplicates.}
+\label{tab:detdata}
+{\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{|l|r|r|r|r|r|r|r|r|r|}
+\hline
+ & \multicolumn{3}{c|}{\textbf{Training}} & \multicolumn{3}{c|}{\textbf{Validation}} & \multicolumn{3}{c|}{\textbf{Test}} \\ \hline
+\textbf{Domain} & \textbf{Images} & \textbf{Stars} & \textbf{Groups} & \textbf{Images} & \textbf{Stars} & \textbf{Groups} & \textbf{Images} & \textbf{Stars} & \textbf{Groups} \\ \thickhline
+\multicolumn{10}{|l|}{\textbf{Five image domains}} \\ \hline
+Laboratory & 1,951 & 4,721 & 47 & 341 & 1,065 & 17 & 352 & 958 & 25 \\ \hline
+Field survey video & 339 & 159 & 14 & 64 & 48 & 4 & 32 & 30 & 2 \\ \hline
+Captive tanks outside the laboratory & 23 & 45 & 1 & 72 & 72 & 1 & 55 & 135 & 2 \\ \hline
+Centred field photographs & 859 & 752 & 5 & 112 & 0 & 1 & 308 & 262 & 4 \\ \hline
+Public web photographs & 2,428 & 129 & 2,359 & 540 & 28 & 525 & 502 & 28 & 487 \\ \hline
+All & 5,600 & 5,806 & 2,426 & 1,129 & 1,213 & 548 & 1,249 & 1,413 & 520 \\ \thickhline
+\multicolumn{10}{|l|}{\textbf{Evaluation view}} \\ \hline
+Lab & 1,951 & 4,721 & 47 & 341 & 1,065 & 17 & 352 & 958 & 25 \\ \hline
+Field without PWS & 586 & 310 & 18 & 248 & 120 & 6 & 152 & 184 & 7 \\ \hline
+PWS & 635 & 646 & 2 & 0 & 0 & 0 & 243 & 243 & 1 \\ \hline
+Web & 2,428 & 129 & 2,359 & 540 & 28 & 525 & 502 & 28 & 487 \\ \hline
+\end{tabular}
+}
+\begin{flushleft}\small
+Lab equals the laboratory domain and Web equals the public web photographs.
+Field is the union of survey video, captive tanks and centred field photographs.
+PWS is part of the centred field photographs.
+The training and validation counts of the row ``Field without PWS'' are differences between the rows above and the PWS row.
+All instance masks of any class: 18,345 training, 3,966 validation, 4,083 test.
+\end{flushleft}
+\end{table}
+
+\section*{Models and training}
+
+Table~\ref{tab:settings} lists the training settings of the three models side by side.
+
+\subsection*{Detector}
+
+The detector is a YOLO26-L segmentation model with an end-to-end head, as implemented in Ultralytics~\cite{jocher2026ultralytics}.
+It has 31,375,206 parameters and was initialized from weights pretrained on COCO~\cite{lin2014microsoft}.
+We trained 60 models with one recipe: five model sizes (N, S, M, L, X) by four label schemes by three seeds.
+Training used AdamW~\cite{loshchilov2019decoupled} with a cosine schedule~\cite{loshchilov2017sgdr} and mixed precision~\cite{micikevicius2018mixed}.
+The loss gains were 7.5 (box), 0.5 (class) and 1.5 (distribution focal loss).
+Every model was scored from its terminal checkpoint, with no selection of a best epoch.
+
+We registered the selection rule before any test prediction was made.
+On 11 November 2026 the rule was registered at 14:58:34 UTC, the selection was locked at 15:57:31 and the first test prediction started at 16:07:50.
+The test split was read once for all 60 models.
+The rule selects the configuration with the highest mean validation mask AP for the sunflower sea star class over three seeds.
+Mask AP is the COCO average precision over intersection-over-union thresholds from 0.50 to 0.95~\cite{lin2014microsoft}, computed with pycocotools 2.0.11.
+Ties go to the configuration with fewer parameters and then to the scheme that comes first in alphabetical order.
+The rule selected size L with scheme B (mean 0.6340, SD 0.0025 over seeds; runner-up X with scheme C, 0.6330).
+The published detector is seed 0 of that configuration.
+For mask AP, predictions were made at 32-bit precision with an image size of 1,024, a confidence of 0.001 and at most 300 detections per image.
+
+At inference the detector runs at an image size of 1,024 with a confidence of 0.25 and an intersection-over-union setting of 0.7.
+Only detections of the sunflower sea star class are kept.
+Each detection with box width $w$ and height $h$ gives one square crop centred on the box centre, with side
+\begin{equation}
+s = \max\!\left(16,\ \left\lceil 2.0\,\max(w,h)\right\rceil\right)\ \text{px}.
+\label{eq:s1crop}
+\end{equation}
+Parts of the square outside the frame are filled with zeros.
+The crop is resized to 512 $\times$ 512~px with bilinear interpolation.
+A point at crop coordinates $(x, y)$ maps back to the frame as $(x, y)\,s/512 + (x_0, y_0)$, where $(x_0, y_0)$ is the top left corner of the crop.
+
+\subsection*{Field network}
+
+The field network maps a crop to 18 maps of the same size (Table~\ref{tab:fields}).
+The backbone is a ConvNeXt-Base~\cite{liu2022convnet} with DINOv3 pretraining~\cite{simeoni2025dinov3}.
+It has 87,566,464 parameters and stage outputs of 128, 256, 512 and 1,024 channels, and all of it is trained.
+The input is normalized inside the backbone with the ImageNet mean and standard deviation~\cite{deng2009imagenet}.
+A feature pyramid neck~\cite{lin2017feature} with 1,673,216 parameters projects each stage to 256 channels with a 1 $\times$ 1 convolution.
+It adds the stages from the top down after bilinear upsampling.
+It then refines the sum at the resolution of the first stage with two blocks of 3 $\times$ 3 convolution, group normalization~\cite{wu2018group} and SiLU~\cite{elfwing2018sigmoid}.
+Five heads share one design.
+A 1 $\times$ 1 convolution from 256 to 128 channels is followed by a residual block of two 3 $\times$ 3 convolutions with group normalization, then SiLU and a 1 $\times$ 1 convolution to the outputs.
+The heads have 328,578 (support and centreline), 328,707 (geometry), 328,707 (landmark), 328,578 (endpoint) and 329,352 (embedding) parameters.
+Their outputs are concatenated and upsampled bilinearly to 512 $\times$ 512.
+The network has 90,883,602 parameters in total.
+
+Before the targets are drawn, each arm polyline is smoothed with two Chaikin iterations~\cite{chaikin1974algorithm} and resampled at 1~px.
+The loss is a weighted sum of six terms,
+\begin{equation}
+L = 1.0\,L_{\mathrm{support}} + 3.0\,L_{\mathrm{centreline}} + 1.0\,L_{\mathrm{geometry}} + 10.0\,L_{\mathrm{landmark}} + 10.0\,L_{\mathrm{endpoint}} + w_e\,L_{\mathrm{embedding}},
+\label{eq:s1loss}
+\end{equation}
+with $w_e = 0.5\,\min(1, \mathrm{epoch}/4)$.
+The support term is a binary cross-entropy with positive weight $\mathrm{clamp}(n_{\mathrm{neg}}/n_{\mathrm{pos}}, 1, 100)$, plus a soft Dice loss~\cite{milletari2016vnet}, plus 2.0 times an area penalty.
+The area penalty is $\mathrm{relu}(\bar{p} - 1.15\,\bar{y})^2/\bar{y}$, where $\bar{p}$ and $\bar{y}$ are the mean predicted and target support.
+The centreline term is a focal binary cross-entropy~\cite{lin2017focal} ($\alpha = 0.75$, $\gamma = 2.0$) averaged over the pixels of the target support.
+The geometry term is an L1 loss on the tangent and on progress, again on the pixels of the target support.
+The landmark and endpoint terms are mean squared errors with pixel weight $1 + 20 \times \mathrm{target}$, normalized by the sum of the weights.
+The embedding term is a discriminative loss~\cite{debrabandere2017semantic}.
+For each image it pulls the embedding $e$ of every arm pixel towards the mean $\mu$ of its arm with $\max(0, \lVert e - \mu\rVert - 0.5)^2$.
+It pushes the means of every pair of arms apart with $\max(0, 2 \times 1.5 - \lVert \mu_a - \mu_b\rVert)^2$, and adds $0.001$ times the mean norm of the arm means.
+Pixels covered by more than one arm are left out of the embedding term.
+
+The backbone learning rate is $10^{-5}$ in the deepest stage and falls by a factor of 0.7 per stage towards the stem ($10^{-5}$, $7 \times 10^{-6}$, $4.9 \times 10^{-6}$, $3.43 \times 10^{-6}$).
+The output biases of the support and centreline, landmark and endpoint heads start at $-4.0$.
+The published weights are an exponential moving average of the trained weights~\cite{polyak1992acceleration} with decay 0.999, taken at the last step.
+No gradient clipping was used.
+Geometric augmentation is a horizontal flip (probability 0.5), a vertical flip (0.15) and a rotation drawn uniformly from $-180$ to 180 degrees.
+Photometric augmentation scales brightness and contrast by a factor from U(0.82, 1.18) and saturation by U(0.80, 1.20), and shifts hue by up to 0.03 of the hue circle.
+It also converts to greyscale with probability 0.08, applies a gamma from U(0.85, 1.15), blurs with probability 0.15 (radius up to 1~px) and adds Gaussian noise with SD 0.015.
+A simulation of a low-quality camera is applied with probability 0.4 to images whose shorter native side is at least 384~px.
+It blurs the image (probability 0.7, radius 0.5 to 2.5~px) and reduces it so that the longer side is between 96 and 256~px.
+It then adds noise with SD between 0.005 and 0.03, compresses the image as JPEG at quality 40 to 80 (probability 0.5) and enlarges it back.
+Last, it scales contrast by 0.45 to 0.85 (probability 0.6) and brightness by 0.55 to 0.95 (0.6), and converts the image to greyscale (0.5).
+We trained three field networks (seeds 0, 1 and 2) with this recipe; the published one is seed 0.
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{Training settings of the three published models.}}
+\label{tab:settings}
+{\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{|>{\raggedright\arraybackslash}p{0.85in}|>{\raggedright\arraybackslash}p{1.6in}|>{\raggedright\arraybackslash}p{1.85in}|>{\raggedright\arraybackslash}p{1.65in}|}
+\hline
+\textbf{Setting} & \textbf{Detector} & \textbf{Field network} & \textbf{Tracer} \\ \thickhline
+Training data & 5,600 images, label scheme B & 4,062 crops & 4,062 crops with 46,569 arms; maps of the seed 0 field network \\ \hline
+Validation data & 1,129 images & 478 crops & 478 crops with 4,801 arms \\ \hline
+Input & image size 1,024 & 512 $\times$ 512 crop & 33 $\times$ 33 patches of the maps and of image features \\ \hline
+Initialization & YOLO26-L segmentation weights pretrained on COCO & backbone from DINOv3 pretraining; neck and heads random & random; image encoder from ImageNet pretraining, frozen \\ \hline
+Optimizer & AdamW, momentum 0.9, weight decay 0.0005 & AdamW, weight decay $10^{-4}$ & AdamW, weight decay $10^{-4}$, gradient norm clipped at 5.0 \\ \hline
+Learning rate & 0.000244, final factor 0.01 & neck and heads $10^{-4}$; backbone $10^{-5}$ with factor 0.7 per stage & $3 \times 10^{-4}$ \\ \hline
+Schedule & warm-up of 3 epochs, then cosine & linear warm-up over 800 steps from a factor of 0.02, then cosine to a factor of 0.05 & per cycle: factor 0.5 in cycle 1, 1.0 in cycle 2, then cosine to 0.1 in cycle 30 \\ \hline
+Length & 50 epochs, no early stopping & 98,250 steps (194 epochs of 508 steps) & 30 cycles of 4,000 steps (120,000 steps) \\ \hline
+Batch & 4 images, nominal batch size 64 & 8 crops & 1 image, all its seeds \\ \hline
+Augmentation & hue 0.015, saturation 0.7, value 0.4; translation 0.1; scale 0.5; horizontal flip 0.5; mosaic 1.0, off in the last 10 epochs; RandAugment; random erasing 0.4 & flips, rotation by any angle, photometric changes, simulation of a low-quality camera (see text) & new draw for every image in each cycle: flips on each axis (0.5), rotation by a multiple of 90 degrees, brightness, contrast and saturation factors from U(0.85, 1.15) \\ \hline
+Mixed precision & on & on; embedding loss at 32-bit & on \\ \hline
+Checkpoint rule & terminal checkpoint & terminal checkpoint, moving average of weights (decay 0.999) & terminal checkpoint after cycle 30 \\ \hline
+Hardware & NVIDIA RTX A6000 & NVIDIA A40, rented & workstation GPU with 32,607~MiB (RTX 5090, inferred from the memory size) \\ \hline
+Wall time & about 6.43~h & 85,097~s (about 23.6~h) & 30,616~s (about 8.5~h), including regeneration of the maps \\ \hline
+Peak GPU memory & about 13.45~GiB & 12,310~MiB & not recorded for this job alone \\ \hline
+Software & Python 3.12.3, PyTorch 2.8.0, Ultralytics 8.4.51 & PyTorch 2.6.0 as pinned; the version at run time was not recorded & Python 3.12.3, PyTorch 2.8.0 \\ \hline
+Parameters & 31,375,206 & 90,883,602 & 194,463, of which 183,975 trained \\ \hline
+\end{tabular}
+}
+\begin{flushleft}\small
+All three models are seed 0 of their configuration.
+Detector augmentation values are the Ultralytics settings recorded for the run.
+PyTorch is cited as~\cite{paszke2019pytorch}.
+\end{flushleft}
+\end{table}
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{The 18 output maps of the field network.} Loss weights are those of Eq~\ref{eq:s1loss}.}
+\label{tab:fields}
+{\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{|l|>{\raggedright\arraybackslash}p{0.9in}|>{\raggedright\arraybackslash}p{0.75in}|l|>{\raggedright\arraybackslash}p{2.0in}|>{\raggedright\arraybackslash}p{1.25in}|}
+\hline
+\textbf{Channel} & \textbf{Map} & \textbf{Head} & \textbf{Output} & \textbf{Training target} & \textbf{Loss (weight)} \\ \thickhline
+0 & Arm support & Support and centreline & sigmoid & union of capsules 8~px wide around each arm polyline & weighted cross-entropy, soft Dice and area penalty (1.0) \\ \hline
+1 & Arm centreline & Support and centreline & sigmoid & $\mathrm{clip}(1 - (d/1.5)^2, 0, 1)^2$, with $d$ the distance in px to the centreline; zero outside the support & focal cross-entropy on support pixels (3.0) \\ \hline
+2, 3 & Tangent, $x$ and $y$ & Geometry & tanh & unit tangent pointing from base to tip, on the support & L1 on support pixels (1.0, with progress) \\ \hline
+4 & Progress & Geometry & sigmoid & arc length along the arm, from 0 at the base to 1 at the tip & L1 on support pixels (1.0, with tangent) \\ \hline
+5, 6, 7 & Mouth, madreporite, anus & Landmark & sigmoid & Gaussian with SD 4.0~px at each annotated point & peak-weighted squared error (10.0) \\ \hline
+8 & Arm base & Endpoint & sigmoid & Gaussian with SD 1.5~px at the first point of each polyline & peak-weighted squared error (10.0, with tip) \\ \hline
+9 & Arm tip & Endpoint & sigmoid & Gaussian with SD 2.0~px at the last point of each polyline & peak-weighted squared error (10.0, with base) \\ \hline
+10 to 17 & Embedding, 8 dimensions & Embedding & linear & none; pixels are labelled by arm & discriminative loss (0.5 after a ramp over 4 epochs) \\ \hline
+\end{tabular}
+}
+\begin{flushleft}\small
+Tangent and progress values are averaged where arm segments overlap.
+\end{flushleft}
+\end{table}
+
+\subsection*{Tracer}
+
+The tracer walks along each arm from the tip towards the disc, using the maps of the field network and the crop.
+Seeds are local maxima of the tip map with a score of at least 0.2, after non-maximum suppression with a radius of 4~px.
+The seed embedding $e$ is the mean embedding over pixels with support above 0.2 within 2~px of the seed.
+
+At each step the tracer reads a 33 $\times$ 33 patch of the 18 maps, centred on the current position.
+The maps are taken before their output activations and are standardized per channel.
+The mean and SD for this come from the 3,659 training crops that are not from Sleepy Stars, without augmentation.
+Three channels are added: the similarity $\exp(-0.5\,\lVert e(p) - e\rVert^2)$ of each pixel embedding $e(p)$ to the seed embedding, and two coordinate ramps from $-1$ to 1.
+A stem of two strided convolutions (21 to 32 channels, 5 $\times$ 5; 32 to 64 channels, 3 $\times$ 3; stride 2 each) with group normalization and SiLU reduces the 21 channels to a 9 $\times$ 9 grid.
+Image features come from the first layers of a MobileNetV3-Small~\cite{howard2019searching} pretrained on ImageNet~\cite{deng2009imagenet} and kept frozen.
+Two feature maps (16 and 24 channels) are computed once per crop, sampled as 9 $\times$ 9 patches at the current position and projected to 16 channels each.
+A 3 $\times$ 3 convolution fuses the 96 channels to 64, giving features $F_t$ at 81 positions.
+
+An attention step~\cite{vaswani2017attention} pools the 81 positions into a context vector $c_t$.
+A gated recurrent unit~\cite{cho2014learning} with 128 hidden units updates the state $h_t$ from the context, the previous displacement $\Delta_{t-1}$ and the seed embedding:
+\begin{equation}
+\begin{aligned}
+c_t &= \sum_{k=1}^{81} \operatorname{softmax}_k\!\left(\frac{K(F_t)_k^{\top}\, q(h_{t-1},\Delta_{t-1},e)}{\sqrt{64}}\right) F_{t,k}, \\
+h_t &= \operatorname{GRU}\!\left([\,c_t,\ \Delta_{t-1},\ e\,],\ h_{t-1}\right), \\
+\Delta_t &= \frac{W_d h_t + b_d}{\lVert W_d h_t + b_d\rVert_2}\,\bigl(0.5 + 5.5\,\sigma(w_s^{\top} h_t + b_s)\bigr), \qquad x_{t+1} = x_t + \Delta_t .
+\end{aligned}
+\label{eq:s1step}
+\end{equation}
+Here $K$ is a 1 $\times$ 1 convolution, $q$ is a linear layer, $\sigma$ is the logistic function, and $h_0$ and $\Delta_0$ are zero.
+The displacement is between 0.5 and 6~px per step.
+A third linear head gives the probabilities of four states: invalid seed, continue, terminate at base and terminate lost.
+The tracer has 194,463 parameters, of which 10,488 belong to the frozen image encoder.
+The field network and the tracer together have 91,078,065 parameters.
+
+Training uses the maps of the frozen seed 0 field network.
+It runs for 30 cycles of 4,000 steps.
+Before each cycle the maps are computed again for one new augmented version of every training crop (Table~\ref{tab:settings}; augmentation seed 20261026).
+One training step uses all seeds of one image.
+Tip peaks are matched one to one to annotated tips within 12~px.
+Unmatched peaks within 20~px of an annotated tip are ignored, and peaks farther away serve as examples of invalid seeds.
+Start positions are jittered with a Gaussian of SD 2~px.
+With probability 0.10 a valid seed is moved 20 to 28~px in a random direction to give an example of a lost walk.
+The target at each position comes from its projection onto the annotated path.
+The state is lost if the position is more than 16~px from the path, and base if the remaining arc length is at most 4~px.
+Otherwise the state is continue, and the target displacement points to the path point 8~px ahead, capped at 6~px.
+The loss is the sum of an action term and a state term.
+The action term is a smooth L1 loss~\cite{girshick2015fast} on the displacement plus one minus the cosine similarity of the directions.
+The state term is a cross-entropy with class weights 2, 1, 2 and 2 for invalid, continue, base and lost.
+Every 16 steps each walk may switch from the annotated displacement to its own predicted displacement, in the manner of scheduled sampling~\cite{bengio2015scheduled}.
+The switch has probability $p_c = 0.30\,\min((c-1)/11, 1)$ in cycle $c$.
+Two settings differ between training and decoding.
+A walk has at most 96 steps in training and 128 at decoding.
+The seed embedding is read at the rounded seed pixel in training and averaged over a radius of 2~px at decoding.
+
+At decoding all seeds of a crop advance in parallel, and the state at each step is the one with the highest probability.
+Table~\ref{tab:decoding} lists the settings for rejection, stopping and suppression.
+At the first step a seed is rejected if the probability of the invalid state is at least the invalid-seed threshold, 0.6 for the published tracer.
+If that probability is below the threshold but still the highest, the next most probable state is used.
+An invalid decision at a later step counts as lost.
+Arms are returned in the order of their seeds, in crop coordinates, and carry no anatomical number.
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{Decoding, stopping and suppression settings of the published tracer.}}
+\label{tab:decoding}
+{\small
+\begin{tabular}{|>{\raggedright\arraybackslash}p{1.9in}|>{\raggedright\arraybackslash}p{4.1in}|}
+\hline
+\textbf{Setting} & \textbf{Value} \\ \thickhline
+Seed & local maximum of the tip map with score $\geq$ 0.2; suppression radius 4~px \\ \hline
+Seed embedding & mean over pixels with support $>$ 0.2 within 2~px of the seed \\ \hline
+Step length & 0.5 to 6~px \\ \hline
+Invalid-seed threshold & seed rejected at the first step if P(invalid) $\geq$ 0.6 \\ \hline
+Stop: base & state ``terminate at base'' \\ \hline
+Stop: lost & state ``terminate lost'' \\ \hline
+Stop: border & position leaves the crop \\ \hline
+Stop: length & path length $\geq$ 768~px \\ \hline
+Stop: loop & position within 2~px of a path point more than 8 steps old \\ \hline
+Stop: step limit & 128 steps \\ \hline
+Returned arms & at least 2 points, not ended as lost, length $\geq$ 8~px \\ \hline
+Smoothing & moving average over 5 points; both end points kept \\ \hline
+Resampling & one point every 4~px, ordered from base to tip \\ \hline
+Base score & score of the nearest peak of the base map (threshold 0.25, suppression radius 3~px) within 6~px of the path end; recorded, not used as a filter \\ \hline
+Suppression: ranking & arms ranked by whether they reached a base, then by length, then by tip score \\ \hline
+Suppression: duplicate & a lower-ranked arm is removed if its seed embedding is within 1.2 of a kept arm and at least 55\% of the vertices of the shorter arm lie within 4~px of the other arm \\ \hline
+Suppression: fragment & a lower-ranked arm is removed if the embedding distance is $\leq$ 0.7, its length is $\leq$ 0.6 times that of the kept arm and the closest vertices are $\leq$ 12~px apart \\ \hline
+\end{tabular}
+}
+\end{table}
+
+\section*{Shortest-path baseline}
+
+The shortest-path decoder reads the same maps as the tracer and uses no trained parameters.
+Its nodes are the pixels with support above 0.5, and a search state is a pixel together with one of eight incoming directions.
+Tips are peaks of the tip map (threshold 0.2, suppression radius 4~px) and bases are peaks of the base map (threshold 0.25, radius 3~px).
+Peaks are snapped to the support mask within 8~px.
+A step of length $l$ with unit direction $u$ costs
+\begin{equation}
+l\,\bigl(0.01 + 2.0\,(1-\bar{m}) + 0.5\,(1 + u\cdot t) + 2.0\,\max(\delta, 0) + 20.0\,\max(-\delta - 0.05, 0)\bigr) + 0.5\,(1 - u_{\mathrm{in}}\cdot u_{\mathrm{out}}) + 2.0\,l\,\lVert e(p) - e_{\mathrm{tip}}\rVert .
+\label{eq:s1dijkstra}
+\end{equation}
+Here $\bar{m}$ is the mean centreline value of the two pixels, $t$ is the predicted tangent at the source pixel and $\delta$ is the change in progress per px.
+The second term is the cost of a turn, and the third is the distance between the embedding of the destination pixel and the mean embedding within 2~px of the tip.
+One Dijkstra search~\cite{dijkstra1959note} runs from each tip, using SciPy~\cite{virtanen2020scipy}.
+Tips are paired with bases by the Hungarian method~\cite{kuhn1955hungarian,crouse2016implementing} on the path cost plus 2.0 times the embedding distance between tip and base.
+A tip without a base is traced to the reachable pixel with the lowest progress.
+A path is trimmed within 3~px of its base.
+It is accepted if its length is at least 10~px, its mean step cost is at most 1.5 and its mean embedding distance to the tip is at most 1.5.
+Its support component must also have at least 4\% of the area of the largest component.
+Accepted paths are smoothed over 7 points, resampled every 4~px and passed through the suppression rules of Table~\ref{tab:decoding}.
+All settings are fixed defaults and were not tuned.
+One check on validation images, in which the tip threshold was raised from 0.2 to 0.4, increased the score of this decoder by about 1 percentage point.
+
+\section*{Arm association in video}
+
+In video, each sunflower sea star receives an identity from BoT-SORT~\cite{aharon2022botsort} as run by Ultralytics.
+The settings are: high, low and new-track thresholds 0.25, 0.1 and 0.25; track buffer 30 frames; match threshold 0.8; score fusion on; camera-motion compensation by sparse optical flow; proximity threshold 0.5; appearance threshold 0.8; no re-identification model.
+One arm tracker runs per star identity and is dropped after the star has not been seen for 30 frames.
+
+The arm tracker links the arms of one star from frame to frame.
+The body centre is the highest peak of the mouth map (threshold 0.15, suppression radius 8~px).
+If there is none it is the centroid of the pixels with support above 0.3, and failing that the crop centre.
+Each arm is expressed relative to the body centre and resampled to $K = 12$ points, evenly spaced along the arm from the tip.
+For a traced arm $i$ and an existing track $j$, the shape distance $D_{ij}$ is the mean distance between corresponding points.
+The points cover the arc length that both arms share, measured from the tip.
+The cost of linking them is
+\begin{equation}
+D_{ij} = \frac{1}{K}\sum_{k=1}^{K}\bigl\lVert \tilde p_i(k)-\tilde p_j(k)\bigr\rVert_2,
+\qquad
+c_{ij} = D_{ij} + 2.0\,\lVert e_i - e_j\rVert_2 \quad \text{if } D_{ij}\leq 120\ \text{px},
+\label{eq:s1assoc}
+\end{equation}
+where $e_i$ is the seed embedding of the arm and $e_j$ the stored embedding of the track.
+Pairs with $D_{ij}$ above 120~px cannot be linked.
+The Hungarian method assigns arms to tracks.
+Each arm and each track can stay unmatched at a cost of 45, so a pair is accepted only if $c_{ij} < 90$.
+A matched track takes the new polyline.
+Its embedding is updated to 0.6 times the old plus 0.4 times the new embedding if the two differ by at most 1.0.
+The tracker has no motion model: a track is compared at its last observed shape.
+Unmatched arms start new tracks, and a track is deleted after more than 16 frames without a match.
+No annotation of arm identity over time exists, so the accuracy of these links was not measured against ground truth.
+
+\section*{Scoring and statistics}
+
+\subsection*{Arms}
+
+Annotated polylines are smoothed with two Chaikin iterations and resampled at 1~px, and traced polylines are resampled at 2~px.
+The distance between a traced arm $P$ and an annotated arm $G$ is the symmetric Chamfer distance~\cite{barrow1977parametric,fan2017point},
+\begin{equation}
+d_{\mathrm{C}}(P,G) = \frac{1}{2}\left(
+  \frac{1}{|P|}\sum_{p\in P}\min_{g\in G}\lVert p-g\rVert_2
+  +
+  \frac{1}{|G|}\sum_{g\in G}\min_{p\in P}\lVert p-g\rVert_2 \right).
+\label{eq:s1chamfer}
+\end{equation}
+All pairs of a traced and an annotated arm in an image are sorted by this distance.
+Pairs are accepted in ascending order if the distance is at most 8~px and neither arm is already matched.
+Accepted pairs are true positives (TP), unmatched traced arms are false positives (FP) and unmatched annotated arms are false negatives (FN).
+From these counts,
+\begin{equation}
+\mathrm{precision} = \frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FP}}, \qquad
+\mathrm{recall} = \frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FN}}, \qquad
+F_1 = \frac{2\,\mathrm{TP}}{\max\left(2\,\mathrm{TP}+\mathrm{FP}+\mathrm{FN},\ 1\right)} .
+\label{eq:s1f1}
+\end{equation}
+Pooled F1 uses the counts summed over all images of a cohort.
+Group-macro F1 sums the counts within each acquisition group, computes F1 per group and takes the unweighted mean over groups.
+The score of a configuration is the mean of its group-macro F1 over three seeds.
+The primary cohort is the development test set (493 images, 180 groups).
+
+Configurations are compared with a paired bootstrap over acquisition groups~\cite{efron1979bootstrap,field2007bootstrapping}.
+For each group we take the difference between two configurations in F1, averaged over seeds.
+We draw the 180 groups with replacement 2,000 times (seed 20261026) and use the same draws for every contrast.
+The 95\% interval runs from the 2.5th to the 97.5th percentile of the mean difference.
+The two-sided p value centres the bootstrap distribution on zero,
+\begin{equation}
+p = \frac{1 + \#\{b : |\delta^{*}_b - \hat\delta| \geq |\hat\delta|\}}{B+1},
+\label{eq:s1pvalue}
+\end{equation}
+with $\hat\delta$ the observed difference, $\delta^{*}_b$ the difference in draw $b$ and $B = 2{,}000$.
+The p values of the eight registered contrasts are adjusted by the Holm method~\cite{holm1979simple}.
+With 2,000 draws the smallest possible p value is 0.0005, so the smallest adjusted value over eight contrasts is 0.004.
+
+\subsection*{Detections}
+
+Predictions of the sunflower sea star class with a confidence of at least 0.25 are taken in descending order of confidence.
+Each takes the unused annotated mask with the highest intersection over union and is a true positive if that value is at least 0.5.
+Precision, recall and F1 follow Eq~\ref{eq:s1f1}.
+Intervals for the detector resample capture groups 2,000 times (seed 20261023) and take percentiles.
+The p value of a detector contrast with bootstrap differences $d_b$ is $\min\bigl(1,\ 2\,(\min(\#\{d_b \leq 0\}, \#\{d_b \geq 0\}) + 1)/(B+1)\bigr)$.
+This differs from Eq~\ref{eq:s1pvalue}.
+Seven contrasts on mask AP were registered for the detector and adjusted by the Holm method.
+
+\section*{Detector results}
+
+Table~\ref{tab:detdomains} gives the scores of the published detector on the test split.
+On all 1,249 test images precision was 0.920, recall 0.903 and F1 0.911.
+The mean absolute error of the star count per image was 0.138, with a bias of $-0.021$.
+The detector made a false positive on 1 of the 550 test images without a sunflower sea star and on none of the 8 images without any annotation.
+
+Recall on field images without PWS was 0.668 (123 of 184 stars in 7 capture groups).
+Two sources account for most of the missed stars.
+In the survey video (\texttt{rov\_svmp}; 32 images) the detector found 2 of 30 stars. \gap{platform and origin of the survey video}
+In four images of a captive tank outside the laboratory (\texttt{field\_porch}) it found 51 of 80 stars.
+On PWS all 243 stars were found, but this is a within-cruise result (see Datasets).
+The Web row rests on 28 stars.
+The campaign recorded bootstrap intervals for mask AP only, so Table~\ref{tab:detdomains} gives no interval for precision, recall or F1.
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{Published detector on the test split, by evaluation domain.} Size L, label scheme B, seed 0; confidence at least 0.25; mask intersection over union at least 0.5.}
+\label{tab:detdomains}
+{\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{|l|r|r|r|r|r|r|r|r|r|l|}
+\hline
+\textbf{Test images} & \textbf{Images} & \textbf{Groups} & \textbf{Stars} & \textbf{TP} & \textbf{FP} & \textbf{FN} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} & \textbf{Mask AP (95\% CI)} \\ \thickhline
+All & 1,249 & 520 & 1,413 & 1,276 & 111 & 137 & 0.920 & 0.903 & 0.911 & 0.719 (0.625 to 0.825) \\ \hline
+Lab & 352 & 25 & 958 & 885 & 92 & 73 & 0.906 & 0.924 & 0.915 & 0.697 (0.637 to 0.784) \\ \hline
+Field without PWS & 152 & 7 & 184 & 123 & 11 & 61 & 0.918 & 0.668 & 0.774 & 0.529 (none recorded) \\ \hline
+PWS & 243 & 1 & 243 & 243 & 6 & 0 & 0.976 & 1.000 & 0.988 & 0.938 (one group) \\ \hline
+Web & 502 & 487 & 28 & 25 & 2 & 3 & 0.926 & 0.893 & 0.909 & 0.819 (0.736 to 0.904) \\ \hline
+\end{tabular}
+}
+\begin{flushleft}\small
+Groups are capture groups.
+Mask AP is the registered selection metric and is shown for reference; its intervals come from 2,000 bootstrap draws of capture groups.
+PWS shares its cruise with 635 training images.
+\end{flushleft}
+\end{table}
+
+The selection rule chose size L with scheme B by a small margin.
+Its mean validation mask AP exceeded that of the runner-up by 0.0010 (95\% CI $-0.0043$ to 0.0110), and it ranked first in 38\% of the bootstrap draws.
+On the test split, size L with scheme C scored 0.71709 and size L with scheme B 0.71707, and the six best configurations lay within 0.004.
+The rank correlation between validation and test mask AP over the 20 configurations was 0.838 (Spearman).
+We therefore make no claim that the selected size or scheme is better than its neighbours.
+Of the seven registered contrasts, the steps from size N to S and from S to M under scheme F had Holm-adjusted p values of 0.007 each.
+The other five contrasts, including the three between scheme F and the other schemes at size L, had adjusted p values of 0.585 or more.
+
+Table~\ref{tab:schemes} compares the four label schemes at size L.
+Recall on all test images was between 0.890 and 0.908.
+On field images without PWS, recall was 0.669 to 0.672 for the three schemes that label other objects and 0.545 for scheme P.
+This difference was not among the registered contrasts and is descriptive.
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{Four label schemes at detector size L.} Means over three seeds on the test split.}
+\label{tab:schemes}
+{\small
+\begin{tabular}{|l|r|r|r|r|r|}
+\hline
+ & & \multicolumn{3}{c|}{\textbf{All test images}} & \textbf{Field without PWS} \\ \hline
+\textbf{Scheme} & \textbf{Classes} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} & \textbf{Recall} \\ \thickhline
+F, every class separate & 37 & 0.942 & 0.905 & 0.923 & 0.669 \\ \hline
+C, four coarse classes & 4 & 0.929 & 0.908 & 0.918 & 0.672 \\ \hline
+B, sunflower sea star and other & 2 & 0.925 & 0.904 & 0.915 & 0.669 \\ \hline
+P, sunflower sea star only & 1 & 0.940 & 0.890 & 0.914 & 0.545 \\ \hline
+\end{tabular}
+}
+\begin{flushleft}\small
+Detections at a confidence of at least 0.25, matched at a mask intersection over union of at least 0.5.
+The published detector is seed 0 of scheme B.
+\end{flushleft}
+\end{table}
+
+\section*{Tracer results}
+
+\subsection*{Configurations and contrasts}
+
+The tracer experiment comprised 27 trained components: nine kinds by three seeds.
+These were three field networks, three field networks with a refined endpoint head and 21 tracers in seven configurations.
+Every tracer was trained on the field network of the same seed.
+The shortest-path decoder needs no training.
+The invalid-seed threshold of each tracer configuration was chosen on validation images (see below): 0.6 for all configurations except the no-embedding and Sleepy Stars only configurations, which use none.
+
+Table~\ref{tab:contrasts} gives the eight registered contrasts on the development test set.
+The full tracer reached a group-macro F1 of 0.755, with precision 0.818, recall 0.773 and pooled F1 0.795 (means over three seeds).
+The shortest-path decoder reached 0.705, with precision 0.725, recall 0.751 and pooled F1 0.737.
+The difference was 5.01 percentage points (95\% CI 4.05 to 5.99; Holm-adjusted p = 0.004).
+
+The no-embedding configuration changes two things at once.
+It sets the seed embedding, the embedding channels and the similarity map to zero in the tracer input, and it also switches off duplicate and fragment suppression at decoding.
+Its registered contrast ($-2.49$ percentage points) is therefore a combined effect.
+We separated the two parts after the test split had been read, by decoding again on a CPU with each part switched alone.
+These post hoc contrasts are marked in Table~\ref{tab:contrasts}.
+Removing suppression alone lowered the score by 2.14 percentage points, and removing the embedding input alone by 0.60.
+The CPU decoding differed from the registered readout by one false positive on 5 of 3,318 image rows, and gave $-2.51$ percentage points for the combined effect.
+At a fixed set of walks, suppression removed 10.17\% of the traced arms of the full tracer (15,442 to 13,872 over three seeds).
+It removed 150 true positives and 1,420 false positives, which changed precision from 0.744 to 0.818 and recall from 0.784 to 0.773.
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{Tracer configurations and contrasts on the development test set.} Group-macro F1 over 180 acquisition groups, mean over three seeds (SD over seeds). Differences are in percentage points.}
+\label{tab:contrasts}
+{\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{|>{\raggedright\arraybackslash}p{2.55in}|l|r|l|l|}
+\hline
+\textbf{Configuration and contrast} & \textbf{F1 (SD)} & \textbf{Difference} & \textbf{95\% CI} & \textbf{Holm p} \\ \thickhline
+Full tracer, hidden width 128 (reference) & 0.7552 (0.0029) & & & \\ \thickhline
+\multicolumn{5}{|l|}{\textbf{Registered contrasts}} \\ \hline
+Shortest-path decoder $-$ full & 0.7051 (0.0061) & $-5.01$ & $-5.99$ to $-4.05$ & 0.004 \\ \hline
+No embedding, input and suppression both off $-$ full & 0.7303 (0.0034) & $-2.49$ & $-3.04$ to $-1.89$ & 0.004 \\ \hline
+No image features $-$ full & 0.7552 (0.0029) & $-0.005$ & $-0.39$ to 0.36 & 1.0 \\ \hline
+No scheduled rollout in training $-$ full & 0.7576 (0.0030) & 0.23 & $-0.21$ to 0.68 & 1.0 \\ \hline
+Hidden state reset at every step $-$ full & 0.7548 (0.0042) & $-0.04$ & $-0.45$ to 0.34 & 1.0 \\ \hline
+Trained on the 403 Sleepy Stars crops only $-$ full & 0.7505 (0.0029) & $-0.47$ & $-0.97$ to 0.01 & 0.37 \\ \hline
+Hidden width 64 $-$ full & 0.7562 (0.0018) & 0.10 & $-0.26$ to 0.45 & 1.0 \\ \hline
+Full $-$ full on a field network with refined endpoint head & 0.7550 (0.0027) & 0.03 & $-0.09$ to 0.15 & 1.0 \\ \thickhline
+\multicolumn{5}{|l|}{\textbf{Post hoc contrasts (CPU decoding, Holm over three tests)}} \\ \hline
+Embedding input off, suppression on $-$ full & & $-0.60$ & $-1.09$ to $-0.14$ & 0.031 \\ \hline
+Suppression off, embedding input on $-$ full & & $-2.14$ & $-2.53$ to $-1.75$ & 0.0015 \\ \hline
+\end{tabular}
+}
+\begin{flushleft}\small
+The F1 column gives the score of the configuration named first in each row; in the last registered row it is the score with the refined endpoint head.
+F1 is given to four decimals so that small differences remain visible.
+Intervals and p values come from 2,000 paired bootstrap draws of acquisition groups; registered p values are adjusted over eight contrasts.
+For the endpoint refinement only the endpoint head of the field network was trained further, on the 403 Sleepy Stars training crops for 8 epochs.
+The third post hoc test, embedding input off with suppression off in both arms, gave $-0.37$ ($-0.80$ to 0.07; Holm p = 0.098).
+\end{flushleft}
+\end{table}
+
+\subsection*{Published tracer}
+
+The published tracer is seed 0 of the full configuration with an invalid-seed threshold of 0.6.
+Table~\ref{tab:cohorts} gives its scores by cohort and by the number of annotated arms.
+On all 553 test images it matched 4,534 of 5,685 annotated arms (precision 0.821, recall 0.798, pooled F1 0.809).
+On StarDome and StarTrack, which were not scored during development, pooled F1 was 0.915 and 0.868.
+Each of these two cohorts has 30 images, and their test animals may also appear in training.
+The campaign recorded one interval for a single cohort: the group-macro F1 on Sleepy Stars had a 95\% interval from 0.819 to 0.919 over five groups.
+
+Pooled F1 was lowest for stars with 3 to 7 annotated arms (0.648, precision 0.605) and highest for stars with 14 to 16 arms (0.925).
+The number of traced arms equalled the annotated number in 32.7\% of the images and was within one in 66.7\%.
+The mean count error was $-0.29$ arms (median 0, mean absolute error 1.35).
+The 4,534 matched arms lay a median of 2.74~px from the annotation by Chamfer distance (interquartile range 1.89 to 4.07~px), and 74.0\% lay within 4~px.
+A matched arm is within 8~px by construction, so these values describe matched arms only.
+The median error was 3.24~px at the tip (interquartile range 1.88 to 5.87~px) and 7.28~px at the base (4.32 to 11.53~px).
+
+\begin{table}[!htbp]
+\centering
+\caption{\textbf{Published tracer on the test split, by cohort and by number of annotated arms.} Seed 0, invalid-seed threshold 0.6; arms matched at a Chamfer distance of at most 8~px.}
+\label{tab:cohorts}
+{\footnotesize
+\setlength{\tabcolsep}{2.8pt}
+\begin{tabular}{|l|r|r|r|r|r|r|r|r|r|r|}
+\hline
+\textbf{Test images} & \textbf{Images} & \textbf{Groups} & \textbf{Arms} & \textbf{TP} & \textbf{FP} & \textbf{FN} & \textbf{Precision} & \textbf{Recall} & \textbf{Pooled F1} & \textbf{Group-macro F1} \\ \thickhline
+\multicolumn{11}{|l|}{\textbf{Cohort}} \\ \hline
+All test images & 553 & 211 & 5,685 & 4,534 & 989 & 1,151 & 0.821 & 0.798 & 0.809 & 0.7778 \\ \hline
+Development test set & 493 & 180 & 4,890 & 3,834 & 916 & 1,056 & 0.807 & 0.784 & 0.795 & 0.7554 \\ \hline
+StarDome & 30 & 30 & 419 & 379 & 30 & 40 & 0.927 & 0.905 & 0.915 & 0.9092 \\ \hline
+StarTrack & 30 & 1 & 376 & 321 & 43 & 55 & 0.882 & 0.854 & 0.868 & 0.8676 \\ \hline
+Sleepy Stars & 63 & 5 & 650 & 560 & 59 & 90 & 0.905 & 0.862 & 0.883 & 0.8695 \\ \thickhline
+\multicolumn{11}{|l|}{\textbf{Annotated arms per image, all test images}} \\ \hline
+3 to 7 & 147 & & 878 & 613 & 400 & 265 & 0.605 & 0.698 & 0.648 & \\ \hline
+8 to 10 & 184 & & 1,654 & 1,298 & 279 & 356 & 0.823 & 0.785 & 0.803 & \\ \hline
+11 to 13 & 112 & & 1,349 & 1,010 & 197 & 339 & 0.837 & 0.749 & 0.790 & \\ \hline
+14 to 16 & 68 & & 1,020 & 919 & 47 & 101 & 0.951 & 0.901 & 0.925 & \\ \hline
+17 to 22 & 42 & & 784 & 694 & 66 & 90 & 0.913 & 0.885 & 0.899 & \\ \hline
+\end{tabular}
+}
+\begin{flushleft}\small
+Groups are acquisition groups.
+Sleepy Stars is part of the development test set.
+StarTrack is one group, so its group-macro F1 equals its pooled F1.
+Precision, recall and pooled F1 are computed from the counts in the row; group-macro F1 is given to four decimals as recorded.
+Arms per bin are TP plus FN.
+\end{flushleft}
+\end{table}
+
+\subsection*{Choice of the invalid-seed threshold}
+
+The threshold was chosen on the 478 validation images from five candidates: none, 0.3, 0.4, 0.5 and 0.6.
+The criterion was the validation group-macro F1, averaged over three seeds.
+Candidates within 0.002 of the best counted as tied, and ties went to no threshold and then to the lowest threshold.
+For the full tracer the five candidates scored 0.7511, 0.7390, 0.7444, 0.7514 and 0.7537.
+The rule chose 0.6 (0.752, 0.749 and 0.760 for seeds 0, 1 and 2).
+The value 0.6 is the upper edge of the grid, and larger values were not tested.
+The same rule kept hidden width 128 (0.7537) over width 64 (0.7505).
+
+On the validation images the published tracer, with the threshold of 0.6, had precision 0.820, recall 0.784, pooled F1 0.801 and group-macro F1 0.7518.
+With no threshold the same weights had precision 0.836, recall 0.773 and pooled F1 0.803.
+The value 0.8034 that is stored with the checkpoint and quoted in the documentation of the inference package is this pooled validation F1 with no threshold.
+It is not the accuracy of the published configuration.
+
+\subsection*{Field network}
+
+No measurement of the field network maps was made on the test split.
+The training log gives validation scores for the published weights at the last epoch (478 crops).
+The centreline path F1 was 0.4381 at a tolerance of 2~px, 0.6858 at 4~px (precision 0.7201, recall 0.6562) and 0.8921 at 8~px (precision 0.8951, recall 0.8905).
+The arm support, thresholded at 0.5, had precision 0.571, recall 0.849 and an intersection over union of 0.519.

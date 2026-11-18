@@ -100,12 +100,18 @@
       "sha256": "b1e92820e68e6ee2c5930c39bad9e05e02d031f2901c70715c579ca4630b0821"
     },
     {
-      "id": "starseg-data-yaml",
+      "id": "starseg-binary-data-yaml",
       "role": "detector-train-config",
-      "path": "DATA/starseg/data.yaml",
-      "sha256": "45a0b96c7ec1eed11d37ead3b169da6c053bd96d485aca97730f7a0c133707f2",
-      "optional": true,
-      "note": "Configuration of the earlier three-class detection dataset (weertman/starseg)."
+      "path": "DATA/starseg_yolo26_20261106/arms/B/data.yaml",
+      "sha256": "49c0b7ab46b78642f2168e6de213496a5f0fe48084050a3b32883609736f7488",
+      "note": "Label scheme B of the frozen detection dataset; the published binary detector was trained on it."
+    },
+    {
+      "id": "starseg-dataset-hashes",
+      "role": "dataset-audit",
+      "path": "DATA/starseg_yolo26_20261106/hashes.json",
+      "sha256": "96da475a892b9b80f75f59e33edcd66d48a2036ce99decafdb3381396a4c34f3",
+      "note": "Checksums of the frozen detection dataset starseg_yolo26_20261106 (split starseg-20261106-64f5f09f0ced)."
     },
     {
       "id": "temporal-lock",
@@ -271,6 +277,15 @@
       "sha256": "1d981d9824dce4a895569a74abae4824b17bf1745d0e508e32a11f70f82bbcf7",
       "optional": true,
       "hf_revision": "9590c93f0eac2ad39924ad81902ccafa626e77ec"
+    },
+    {
+      "id": "starseg-data-yaml",
+      "role": "earlier-dataset",
+      "path": "DATA/starseg/data.yaml",
+      "sha256": "45a0b96c7ec1eed11d37ead3b169da6c053bd96d485aca97730f7a0c133707f2",
+      "optional": true,
+      "note": "Configuration of the earlier three-class detection dataset, replaced by starseg_yolo26_20261106 on 2026-11-17.",
+      "hf_revision": "c61eabd0f8af8ae051019e27df7d8e102d477c39"
     }
   ]
 }

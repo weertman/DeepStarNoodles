@@ -21,6 +21,7 @@ not validated measurements of biological arm identity.
 | Arm dataset | [Hugging Face `weertman/deepstarnoodles-data`](https://huggingface.co/datasets/weertman/deepstarnoodles-data) (gated), version `noodles_final_20261026` |
 | Fast video inference | [`deepstarnoodles-inference`](https://github.com/weertman/deepstarnoodles-inference): a packaged, compiled pipeline for long recordings |
 | Annotating an archive on rented GPUs | [`backcast/`](backcast/README.md) |
+| Methods paper (draft) | [`paper/`](paper/README.md): main text and S1 Text as PDF, LaTeX source, figure scripts |
 
 Start with the [quick start](#quick-start), use the [project map](#project-map)
 to navigate the code, or jump to [training and evaluation](#training-and-evaluation),
@@ -161,11 +162,14 @@ Add `alternative-detector` to also check the fine and coarse detectors, and
 `pretrained-backbone` if you downloaded the Meta file. Validation hashes the
 files listed in the manifest; it does not hash every image.
 
-The detection dataset on which the detectors were trained and scored is the
-frozen version `starseg_yolo26_20261106` (7,978 images; 5,600 / 1,129 / 1,249
-for training, validation and test). The Hugging Face repository
-[`weertman/starseg`](https://huggingface.co/datasets/weertman/starseg)
-currently holds an earlier three-class version of that dataset.
+Training and scoring the detectors needs the
+[detection dataset](https://huggingface.co/datasets/weertman/starseg), version
+`starseg_yolo26_20261106` (7,978 images; 5,600 / 1,129 / 1,249 for training,
+validation and test). It downloads into `DATA/starseg_yolo26_20261106/`:
+
+```bash
+hf download weertman/starseg --repo-type dataset --local-dir DATA
+```
 
 ### 3. Process a video
 
@@ -286,7 +290,8 @@ dataset (split 4,062 / 478 / 502). They were trained before the datasets were
 frozen and are not the models of the paper. They remain in the history of the
 Hugging Face repositories (models: revision
 `0881c427eb0f1f564ef76fbd8399173121169132`; arm data: revision
-`9590c93f0eac2ad39924ad81902ccafa626e77ec`), are listed in
+`9590c93f0eac2ad39924ad81902ccafa626e77ec`; the earlier three-class detection
+data: revision `c61eabd0f8af8ae051019e27df7d8e102d477c39`), are listed in
 `config/artifacts.json` with role `earlier-model` or `earlier-dataset`, and
 their selection and test records are in [`config/locked/`](config/locked/) and
 [`docs/published-tracer.md`](docs/published-tracer.md).
@@ -302,6 +307,7 @@ their selection and test records are in [`config/locked/`](config/locked/) and
 | [`docs/`](docs/) | Representation API and earlier recipe documentation |
 | [`huggingface/`](huggingface/) | Model and dataset cards of the Hugging Face repositories |
 | [`backcast/`](backcast/README.md) | Annotating a long archive of 1 fps video on rented GPUs, then tracking and representations |
+| [`paper/`](paper/README.md) | The methods paper: PDFs, LaTeX source and figure scripts |
 | [`tests/`](tests/) | Unit, integration, and optional local-artifact checks |
 | [`examples/`](examples/), [`benchmarks/`](benchmarks/) | Micro example data and scripts; benchmark and parity tools |
 | [`external/dinov3/`](external/dinov3/) | Vendored DINOv3 source under Meta's license |

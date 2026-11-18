@@ -1,5 +1,7 @@
 # Inference benchmark results — completed pilot through Round 16, 28 October–8 November 2026 (UTC)
 
+**0.5.0.dev13 changes only `track-videos` and `representations`, which run on the CPU.** By default `track-videos` now assigns star IDs with a post-hoc Hungarian tracker, which starts a new ID where two stars could be confused rather than guess. On the backcast rehearsal's two 2 fps flipping clips and eight variants of them, one star keeps 1 or 2 IDs, where 0.5.0.dev12 gave it 4–11. On synthetic multi-star scenes built from real detections, detections on another animal's ID fell from 6.3% to 1.0% in dense crowds at 1 fps, at the cost of about 2.5 times as many, shorter, IDs. Arm tracking runs through the vendored array tracker with identical IDs, and `track-videos` costs **0.26 ms of CPU per arm instead of 0.77**. `--star-tracker botsort` reproduces dev12 byte for byte. See [the section](#star-tracking-after-annotation-050dev13).
+
 **0.5.0.dev11 and dev12 keep what later steps need from Hydra's maps, without changing any arm.** Those maps are about 2 MiB per crop, too large to save, so dev11 keeps each star's body origin, support area and centroid, and dev12 adds the mouth, madreporite and butthole as `[x, y, p]`. dev12 also adds `track-videos`, which gives `serve-videos` output star and arm IDs. On 1,435 frames with 3,502 stars every star matched dev10 apart from the added fields; see [the section](#hydra-fields-and-tracking-after-annotation-050dev11-and-dev12).
 
 **Round 16 (0.5.0.dev10) measures the compiled pipeline on nine GPU types on RunPod's secure cloud. The RTX 5090 costs the least per frame.** It sustained **58.1 images/s** at $1.19/h, or $5.69 per million frames. The RTX 4090 is next, at 41.1 images/s and $6.02 per million frames. The RTX PRO 6000 Blackwell was fastest at **67.4 images/s**, at $10.26 per million frames. The 5090 was out of stock throughout the 31 October runs and was measured on 8 November with the same frozen bundle. All 18 sessions were steady by the rules below, and none faulted. The round also found and fixed GPU memory growing with every video, which had tripped the device guard in its first pass. See [its section](#round-16-speed-test-across-gpu-types).
@@ -78,6 +80,67 @@ Every window's halves were within 3.8% of each other and its stars per image wit
 **Faults depend on MPS.** The same local workers, without MPS and time-slicing one GPU, hit the known illegal memory access 3 times in about 1.1 process-hours. Each was an Xid 31 MMU fault (`GPCCLIENT_GCC`, `FAULT_PDE`, `ACCESS_TYPE_VIRT_READ`), mid-video at unrelated frames. A worker forcing a cache release once a second did not fault sooner than the others, and another faulted without ever reaching its allocator limit, so cached-block release isn't the trigger. Under MPS there were none in the 31.4 worker-hours of the 31 October runs, or the 13.9 streamed before them. The RTX 5090's two sessions on 8 November also ended normally, with no video errors. The root cause remains unknown.
 
 **Outputs depend slightly on the GPU's chip family, with no visible bias.** Each type's two process counts agreed on every shared frame, with arms within 0.01 px. Between types, on the 5,730 frames all of them annotated (`review/round16_cross_gpu.py`), the A6000 and A40 were identical, the 4090 and RTX 6000 Ada had no arm outside 2 px, and the PRO 4500 and PRO 6000 agreed on 99.998% of arms. The L40S kept 99.7% of the 4090's arms within 2 px, and the 3090 kept 99.3% of the A6000's. Across families the figures are 98.4–98.5% with 99.7–99.8% of frames at the same star count, just under the relaxed gate's 99% line. The RTX 5090, measured later, kept 98.4% of the A6000's arms within 2 px on 5,850 shared frames, with 99.8% of frames at the same star count, in line with the other cross-family pairs. Across the eight types run on 31 October, stars per frame stayed within 2.398–2.400, arms per star within 9.89–9.90, and mean arm length within 100.15–100.18 px.
+
+## Star tracking after annotation (0.5.0.dev13)
+
+**Harness.** The inputs are the backcast rehearsal's real 0.5.0.dev12 `serve-videos` records (RTX A6000, 2026-11-08):
+
+- **Flip clips:** two 4-minute flipping clips at 2 fps, each with one star. Each also comes subsampled to 1 fps and 0.5 fps, with a 15 s run of records removed, and with 5% of detections removed.
+- **Lab clips:** two synthetic 1 fps clips of validation stills, each held 5 s, with 3–5 stars per frame.
+- **Multi-star scenes:** synthetic, built from the flip clips' real detections. Each animal is one clip's real star, or the same star played backwards, with its real misses, box jitter and size changes, moved along a scripted path. The scenes are crossings, approach-touch-separate, rotating position swaps, one star out of view for 20 s while another walks over its spot, one animal leaving and another arriving 2–90 s later 0–3 widths away (hand-overs), and crowds of four animals on random walks at 0.02–0.15 widths/s in a 6×4 (dense) or 10×7 (sparse) body-width area. Contacts are played with both stars detected, one hidden, random drops, or one merged box. Each scene exists at 0.5, 1 and 2 fps, with the clips' natural motion scaled to 0.25 (calm, as lab crawling; 741 + 240 inputs) or kept whole (with experimenters' jumps of up to 2 widths; 741 inputs). A second calm crowd set with other random walks (80 clips at 1 fps) was held out while the parameters were chosen. Every output detection is matched back to its animal.
+- **Scoring:** against the paper re-trace (flip clips), the known holds (lab clips) and the scripted animals. Every run is on one CPU thread with no GPU.
+
+| Flip clip | Star IDs, dev12 → dev13 | Frames on the main ID | Untracked detections | Arm-ID agreement with the re-trace |
+|---|---|---|---|---|
+| R1, 2 fps | 7 → 2 | 0.31 → 0.68 | 2.3% → 0.2% | 0.37 → 0.42 |
+| R1, 1 fps | 5 → 2 | 0.31 → 0.68 | 3.8% → 0 | 0.39 → 0.51 |
+| R1, 0.5 fps | 4 → 2 | 0.30 → 0.69 | 4.2% → 0 | 0.35 → 0.43 |
+| R1, 15 s gap | 7 → 2 | 0.33 → 0.66 | 2.5% → 0.2% | 0.40 → 0.44 |
+| R1, 5% dropped | 7 → 2 | 0.31 → 0.68 | 2.9% → 0.2% | 0.37 → 0.43 |
+| R2, 2 fps | 11 → 1 | 0.34 → 1.00 | 4.8% → 0.2% | 0.42 → 0.43 |
+| R2, 1 fps | 7 → 1 | 0.33 → 1.00 | 8.8% → 0 | 0.43 → 0.42 |
+| R2, 0.5 fps | 6 → 1 | 0.33 → 1.00 | 12.5% → 0 | 0.41 → 0.36 |
+| R2, 15 s gap | 11 → 1 | 0.36 → 1.00 | 5.1% → 0.2% | 0.42 → 0.45 |
+| R2, 5% dropped | 10 → 1 | 0.35 → 1.00 | 4.8% → 0.2% | 0.42 → 0.43 |
+
+R1 splits once in every variant, at 163–165 s, where an experimenter moves the star 3.2 body widths after 2 s out of view: beyond the lone-jump reach (2.5 widths), and with other stars around it could be another animal. The 0.2% left untracked is one near-duplicate box per clip (IoU about 1), the less confident of the two. No detection is dropped, and no spurious box gets an ID. Arm-ID switches per 1,000 links rose on R2 (19.7 → 28.2 at 2 fps, 28.2 → 55.6 at 1 fps), because the arm tracker now follows one continuous star instead of fragments.
+
+| Lab clip | Star IDs | Holds with as many IDs as stars | Detections untracked | Untracked in their first frame | IDs carried across a cut, static/moved |
+|---|---|---|---|---|---|
+| snackpack, 129 stars | 34 → 91 | 0.96 → 1.00 | 5.6% → 0 | 24.0% → 0 | 28/17 → 18/9 |
+| stress, 97 stars | 19 → 22 | 1.00 → 0.92 | 3.3% → 2.1% | 16.5% → 2.1% | 44/13 → 44/15 |
+
+Purity is 1.000 and 0.998, against 1.000 and 0.996 for dev12. The stress clip's 2.1% are IoU-0.99 duplicate boxes, five detections of four stars, which the scorer counts as separate objects. An ID carried across a cut to a star whose box moved is a wrong carry: 9 against dev12's 17 on snackpack, 15 against 13 on stress.
+
+**Multi-star scenes, 1 fps, calm.** "Pre" is the first dev13 tracker (no motion model, a gate up to 4 widths, gaps up to 60 s), which an independent check found swapped animals more often than dev12; the released default replaced it. Wrong-animal detections are those on an ID that mostly belongs to another animal; extra IDs are IDs beyond one per animal.
+
+| Scene | Clips | ID switches, dev12 / pre / dev13 | Wrong-animal detections | Extra IDs | dev13 worse / better than dev12, clips |
+|---|---|---|---|---|---|
+| Dense crowd | 80 | 171 / 300 / 112 | 6.3% / 13.1% / 1.0% | 337 / 225 / 858 | 4 / 43 |
+| Sparse crowd | 80 | 60 / 132 / 27 | 2.0% / 6.6% / 0.3% | 229 / 109 / 311 | 0 / 20 |
+| Held-out dense crowd | 40 | 90 / 141 / 53 | 4.7% / 11.2% / 0.7% | 178 / 105 / 407 | 2 / 17 |
+| Held-out sparse crowd | 40 | 39 / 77 / 24 | 2.6% / 7.0% / 0.1% | 114 / 64 / 211 | 0 / 11 |
+| Crossing | 48 | 14 / 42 / 10 | 1.0% / 7.0% / 0.0% | 51 / 36 / 46 | 0 / 3 |
+| Out of view 20 s | 9 | 0 / 6 / 0 | 0 / 10.2% / 0 | 15 / 6 / 7 | 0 / 0 |
+| Touch and separate | 48 | 5 / 0 / 1 | 0.7% / 0 / 0.2% | 70 / 1 / 44 | 1 / 2 |
+| Rotating swap | 18 | 0 / 0 / 3 | 0 / 0 / 0.0% | 18 / 0 / 14 | 0 / 0 |
+| Hand-over | 20 | 3 / 16 / 6 | 2.0% / 10.7% / 4.0% | 0 / 0 / 0 | 3 / 0 |
+
+"Worse" or "better" means more than five detections apart. The verification's two worked examples now come out right: in `cross_v0.2_y0.0_both` (two stars crossing head-on, both detected) both keep their IDs through the crossing, and in each `leave20_bswap` case the star tracked throughout keeps its ID while the returning one gets a new one. The hand-overs that still merge are a newcomer at the same spot within 30 s (3), or one width away 3 s or 20 s after the first star left (3). At 0.5 and 2 fps the picture is the same: dense crowds 6.6% → 1.0% and 4.7% → 0.8%, crossings 1.1% → 0 and 1.5% → 0. With the clips' full natural motion, crowds improved as much (dense 6.7% → 2.7% at 1 fps, sparse 3.2% → 1.4%), while crossings (0.1% → 0.9%), a star out of view (2.0% → 2.9%) and rotating swaps (4.3% → 3.1%; 2.5% → 4.7% at 2 fps) came out about even.
+
+The price is continuity in crowds: where two stars could be confused, the tracker starts new IDs rather than guess, so dense crowds have about 2.5 times dev12's extra IDs and sparse ones 1.4 times. Each extra ID is pure, so per-animal sequences are shorter but not mixed. None of this has been checked on real multi-star 1 fps footage.
+
+**CPU, ms per arm.** CPU time excludes the 2.3–2.4 s CLI start and is the minimum of 3 runs on a Xeon W-3365 under other load. The default column is the released tracker; a rerun of dev12 alongside it gave 0.77 ms per arm again.
+
+| Input | dev12 | dev13 `--star-tracker botsort` | dev13 default |
+|---|---|---|---|
+| Flip clips, 2 fps | 0.73–0.78 | 0.29–0.32 | 0.27–0.28 |
+| Flip clips, 1 and 0.5 fps | 0.71–0.81 | 0.26–0.40 | 0.25–0.29 |
+| lab snackpack | 0.83 | 0.24 | 0.22 |
+| lab stress | 0.79 | 0.28 | 0.26 |
+| All 12 inputs | **0.77** (24.6 s) | 0.29 (9.2 s) | **0.26** (8.3 s) |
+
+dev12 spent about 80% of its time in the package's arm tracker, mostly NumPy overhead on its per-pair shape distance. The vendored array tracker computes the same matrices in blocks and gives the same arm IDs. The tests check it against `runtime.StarArmTrackerRegistry` on real fixtures, and `--star-tracker botsort` output is byte-identical to dev12 on all 12 inputs. The remaining time on lab snackpack splits as follows: JSON writing 31%, JSON reading 22%, arm tracking 39% (half of it the resample) and star tracking 5%. At 873 million arms per camera-year, `track-videos` drops from about 190 to about 65 CPU-hours.
 
 ## Hydra fields and tracking after annotation (0.5.0.dev11 and dev12)
 

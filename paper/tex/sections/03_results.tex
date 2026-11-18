@@ -1,0 +1,130 @@
+\section*{Results}
+
+\subsection*{Detection}
+
+On the 1,249 test images the published detector found 1,276 of 1,413 annotated sunflower sea stars and made 111 false detections, one of them on the 550 images without a sunflower sea star (precision 0.920, recall 0.903; Table~\ref{tab:accuracy}).
+Recall was 0.924 on laboratory images and 0.668 on field images apart from one cruise, with a 95\% interval from 0.29 to 0.88 over seven capture groups.
+In that subset the detector found 2 of the 30 animals in survey video.
+Photographs from that cruise, taken on dive surveys in Prince William Sound (PWS), are reported on their own: 243 test images come from one day and 635 training images from the other two, so the recall of 1.000 is a within-cruise result.
+On field images apart from PWS, recall was 0.669 to 0.672 when other objects were labelled and 0.545 when they were left unlabelled (\nameref{S1_Fig}; Table~G in \nameref{S1_Text}).
+The selected configuration led the runner-up on the validation metric by 0.0010 (95\% CI $-0.0043$ to 0.0110), so the selection does not separate the two.
+
+\begin{table}[!ht]
+\begin{adjustwidth}{-0.5in}{0in}
+\centering
+\caption{{\bf Accuracy of the published detector and tracer on test images.}}
+\begin{tabular}{|l|r|r|r|r|r|}
+\hline
+{\bf Test images} & {\bf Images} & {\bf Annotated} & {\bf Precision} & {\bf Recall} & {\bf F1}\\ \thickhline
+\multicolumn{6}{|l|}{{\bf Detector}: sunflower sea stars}\\ \hline
+All & 1,249 & 1,413 & 0.920 & 0.903 & 0.911\\ \hline
+Laboratory & 352 & 958 & 0.906 & 0.924 & 0.915\\ \hline
+Field, apart from PWS & 152 & 184 & 0.918 & 0.668 & 0.774\\ \hline
+PWS (one cruise) & 243 & 243 & 0.976 & 1.000 & 0.988\\ \hline
+Public web photographs & 502 & 28 & 0.926 & 0.893 & 0.909\\ \thickhline
+\multicolumn{6}{|l|}{{\bf Tracer}: arms}\\ \hline
+All & 553 & 5,685 & 0.821 & 0.798 & 0.809\\ \hline
+Development test set & 493 & 4,890 & 0.807 & 0.784 & 0.795\\ \hline
+StarDome & 30 & 419 & 0.927 & 0.905 & 0.915\\ \hline
+StarTrack & 30 & 376 & 0.882 & 0.854 & 0.868\\ \hline
+\end{tabular}
+\begin{flushleft} Detector: predictions with confidence of at least 0.25, matched one to one at a mask intersection over union of at least 0.5. Tracer: seed 0 with the published threshold, arms matched at a Chamfer distance of at most 8~px; F1 is pooled over the images of each row. PWS, dive surveys in Prince William Sound: its test and training images come from one cruise.
+\end{flushleft}
+\label{tab:accuracy}
+\end{adjustwidth}
+\end{table}
+
+\subsection*{Arm tracing}
+
+On the development test set the tracer reached a group-macro F1 of 0.755 (standard deviation over seeds 0.003), and the shortest-path decoder reached 0.705 (0.006).
+The difference was 5.01 percentage points (95\% CI 4.05 to 5.99; Holm-adjusted $p = 0.004$; Fig~\ref{fig:decoders}).
+Most of the gain was in precision (0.818 against 0.725); recall was 0.773 against 0.751.
+For arms that both decoders matched, the median error at the base was 7.2~px for the tracer and 10.8~px for the shortest path (Fig~\ref{fig:decoders}C).
+One check on the validation split raised the shortest-path score by about 1 point.
+
+\begin{figure}[!ht]
+\FIG{Fig4}{\linewidth}
+\caption{{\bf The recurrent tracer compared with a shortest-path decoder of the same maps.}
+Panels A to C show one test image, the one with the median difference in F1 between the decoders among images with at least five annotated arms.
+(A) Shortest-path decoder. The map shows the part of the step cost that does not depend on direction, for one tip (white dot). The cheapest path (cyan) runs to the base paired with the tip; triangles are predicted bases. In this image 13 bases were predicted for 24 tips, and the other 11 tips ran to the reachable pixel with the lowest progress.
+(B) Tracer. Cyan dots are the steps of one walker from the same tip, with two of the 33 $\times$ 33~px patches it read. It stopped when it predicted a base with probability 0.93. White lines are the other walkers.
+(C) Final arms from each decoder, with F1 for this image. Dashed line: an annotated arm that was missed.
+(D) F1 for each of the 180 acquisition groups of the development test set, averaged over three seeds; point area scales with the number of images in the group. The inset gives the difference in group-macro F1 with its 95\% interval from 2,000 paired bootstrap draws.
+(E) Time to decode one image from its maps, for the 493 images of the development test set. The field network is excluded. The shortest-path decoder ran on a CPU. The tracer ran on a GPU, in the reference implementation used for scoring and in the optimized implementation of the inference package. Bars mark medians. The hardware differs between rows, so the times are not a like-for-like comparison. The plotting code was written with coding agents (see Methods).}
+\label{fig:decoders}
+\end{figure}
+
+The published tracer matched 4,534 of the 5,685 annotated arms in all 553 test crops (precision 0.821, recall 0.798; Table~\ref{tab:accuracy}).
+Matched arms lay a median of 2.7~px from the annotation (interquartile range 1.9 to 4.1~px; \nameref{S2_Fig}), with median errors of 3.2~px at the tip and 7.3~px at the base.
+F1 was 0.915 and 0.868 on the two rigs not scored during development, and 0.883 on the 63 test crops from the rig used for the rest recordings (Fig~\ref{fig:data}C).
+F1 was 0.648 for animals with 3 to 7 arms, where precision was 0.605, and 0.925 for animals with 14 to 16 arms (Table~I in \nameref{S1_Text}).
+The number of traced arms equalled the annotated number in 32.7\% of crops and was within one in 66.7\%.
+
+Six of the remaining seven contrasts had intervals that included zero (Table~H in \nameref{S1_Text}).
+Removing the image features, resetting the recurrent state at every step, training without scheduled sampling, halving the hidden width, or training on 403 crops from one source each changed the score by less than 0.5 points.
+Removing the embedding from the tracer input and from the removal of duplicates lowered it by 2.49 points (95\% CI 1.89 to 3.04).
+A post hoc split assigned 2.14 points to the removal of duplicates and 0.60 points to the input.
+
+\subsection*{Throughput}
+
+On streamed video the pipeline processed between 19.3 and 67.4 frames per second, depending on the GPU type (Fig~\ref{fig:throughput}B; Table~K in \nameref{S1_Text}).
+On an RTX 5090 (58.1 frames per second), one year of video from one camera at 1 frame per second takes 6.3 days and costs 179 US dollars at the rental price on the day of the test.
+The optimization rounds raised the rate on a fixed set of 256 images from 3.5 to 52.2 images per second on the same machine (Fig~\ref{fig:throughput}A).
+
+\begin{figure}[!ht]
+\FIG{Fig5}{\linewidth}
+\caption{{\bf Optimization of inference speed by coding agents, and sustained throughput by GPU type.}
+(A) Every timed run on a fixed set of 256 images in eleven rounds on rented RTX 5090 machines. In each round a coding agent (Codex with GPT-6-astra, rounds 1 to 4; Claude Code, rounds 5 to 11) chose configurations and timed them. A change was kept only if it was faster and its outputs agreed with those of the original pipeline. Marker shape gives the outcome of each run. The line follows the kept configuration as measured on the machine of each round; machines differ between rounds. Of 150 runs, 40 changed the outputs and 10 exceeded a memory limit. Round 10 tested latency only.
+(B) Sustained rate of the optimized pipeline on video streamed at 1 frame per second, for nine GPU types, each on one rented machine. MPS: CUDA Multi-Process Service. These tests used an earlier one-class detector. The plotting code was written with coding agents (see Methods).}
+\label{fig:throughput}
+\end{figure}
+
+\subsection*{Righting after inversion}
+
+The detector found the animal in 58,704 of the 63,716 frames of the righting clips (92.1\%).
+In sessions left out of fitting, the posture classifier recovered flip episodes with an F1 of 0.990 and the three postures with a macro-F1 of 0.857, over 19,497 time points (Fig~\ref{fig:righting}C).
+Righting times from the classifier and from the observer had a mean absolute difference of 2.4~s over 273 matched bouts, whose median duration was 29~s.
+The classifier's times were shorter by 1.4~s on average (95\% CI 0.8 to 2.1; Fig~\ref{fig:righting}D).
+In 24 bouts aligned to the flip, median arm curvature rose from 0.16~rad per body radius before the flip to 0.31 while the animal was upside down (Fig~\ref{fig:righting}E).
+
+\begin{figure}[!ht]
+\FIG{Fig6}{\linewidth}
+\caption{{\bf Righting after inversion, measured from the pipeline outputs.}
+(A) Six frames of one flip, 1.5~s apart, with traced arms on the detector crop. Frame colour and label give the observer's posture label.
+(B) Arm geometry through the same flip. Left: traced arms of every frame from 367.5 to 377.0~s, in body radii about the body origin, coloured by the observer's label. Right: arm-support area, number of traced arms, arm length and arm curvature from 365 to 379~s, without smoothing. Grey points are single arms and black lines are medians. Shading marks the interval labelled as being flipped. The detector found no animal at 372.5~s.
+(C) Posture classified in sessions left out of fitting. Left: observer and classifier postures for the clip of A and B. White stretches were not scored, because a time point is scored only if the animal was detected in every frame from 29.5~s before it to 15~s after it. Right: F1 for flip episodes and macro-F1 for the three postures over 19,497 time points in 44 clips of 23 animals. Bars are means over three classifier seeds and circles are single seeds. The classifier was fitted for this analysis and is not a published model.
+(D) Righting time, from the first upside-down time point after a flip to the first right-side-up time point: 280 bouts from the observer and 275 from the classifier, and the 273 matched bouts against the identity line. Heat maps show the 280 bouts as rows sorted by righting time, for the six measures of E.
+(E) Twenty-four bouts aligned to the start of the flip, chosen from the observer's labels and the detections alone: four clips per session and, in each, the complete bout with a righting time nearest 30~s. Side facing camera is the peak probability of the anus map minus that of the mouth map. The other measures come from the traced arms and are scaled by the body radius before the flip, $R_0$: arm deformation (change in the shape of each arm between frames after removal of rigid motion; logarithmic scale), fold asymmetry (distance from the body origin to the centroid of the arm tips), arm-length spread (interquartile range of arm lengths), median arm curvature, and arm-support area relative to its median before the flip. Thin lines are bouts coloured by the observer's label; black lines are medians where at least 12 bouts contribute. Background shading marks the median times at which the animals were upside down (4.0~s) and right side up again (34.0~s). All measures are projections onto the image plane. The plotting code was written with coding agents (see Methods).}
+\label{fig:righting}
+\end{figure}
+
+\subsection*{Change from quiescent to still alert}
+
+Across the 96 transitions, arm-tip motion rose by a median of 63\% (95\% CI 32 to 95), arm deformation by 42\% (26 to 79) and body speed by 41\% (31 to 65; Fig~\ref{fig:rest}D; Table~J in \nameref{S1_Text}).
+The rise in arm-tip motion was 144\% (80 to 224) in the 41 transitions near a scheduled light change and 29\% (9 to 44) in the other 55.
+
+\begin{figure}[!ht]
+\FIG{Fig7}{\linewidth}
+\caption{{\bf Arm kinematics at the change from a quiescent to a still-alert state.}
+(A) Every traced arm of one animal at each second of two 60-s windows, drawn about the body centre: quiescent (180 to 120~s before the scored onset) and still alert (120 to 180~s after).
+(B) Arm-tip motion, arm deformation and fold asymmetry of the same animal through the onset (grey, each frame; black, running median over 15~s), with the observer's labels, which have a resolution of 1~min.
+(C) Seven measures for the 96 transitions of 24 animals, each divided by its value in the quiescent baseline (median and interquartile range). Grey bands mark the minute before onset.
+(D) Change of each measure from before (300 to 60~s before onset) to after (60 to 300~s after): median and 95\% interval from a bootstrap of animals, for all transitions (black), the 41 that began between 5~min before and 10~min after a scheduled change of the lights (purple) and the other 55 (grey). The right column gives the percentage of transitions in which the measure rose.
+(E) Position in the tank. Each tank is warped onto a common outline from markers on its rim and floor (inner rectangle, floor; outer bands, walls seen from above). Shading is the time spent at each position over all recordings of 27 animals, weighted equally. These positions come from the detections saved by the recording software, which used an earlier detector. Dots are the 96 transitions. Lengths are scaled by the body radius in the quiescent baseline, $R_0$. The plotting code was written with coding agents (see Methods).}
+\label{fig:rest}
+\end{figure}
+
+\subsection*{Arm identity}
+
+In the rest recordings, 94.4\% of traced arms were linked to an arm in the previous frame, and 95.5\% of the links were also made when the video was read backwards (Fig~\ref{fig:identity}D).
+Jumps of more than 30$^{\circ}$ in the angle of an arm tip between frames occurred in 1.5 of 1,000 links in the rest recordings and 12.6 in the righting clips, with 95.4 while the animal was being turned (Fig~\ref{fig:identity}C and \ref{fig:identity}D).
+
+\begin{figure}[!ht]
+\FIG{Fig8}{\linewidth}
+\caption{{\bf Linking traced arms between video frames.}
+(A) One linking step in a righting clip, 0.5~s before a flip (the animal of Fig~\ref{fig:righting}A). Left: traced arms at time $t$ (magenta) and 0.5~s later (green), about the body centre, and both overlaid. Middle: each new arm (rows) against each open track (columns). A cell gives the cost of the pair, the mean distance in pixels between the two shapes plus twice the distance between their embeddings; a cross marks a pair more than 120~px apart in shape. The assignment with the lowest total cost is outlined, and a pair is kept only if its cost is below 90. Here seven arms continue seven of eight open tracks. Right: arms of every frame from 366 to 378~s, coloured by identity, with the path of each arm tip.
+(B) Angle of each arm tip about the body centre over 10~min at 1 frame per second, through the onset shown in Fig~\ref{fig:rest}A, one line per identity. Identities shorter than 60~s are grey. A vertical jump is an identity that moved to another arm.
+(C) The same view through the flip in A, with the observer's posture labels.
+(D) Self-consistency over 16.0~h of rest recordings (Sleepy Stars; 588,124 arms) and 8.5~h of righting clips (Flipping; 440,730 arms). Left: percentage of traced arms whose identity lasts at least a given time. Middle, by behavioural label: percentage of arms linked to the previous frame; percentage of links also made when the tracker runs backwards in time; and jumps of more than 30$^{\circ}$ in tip angle per 1,000 links. Filled markers, the published tracker, which rejects links above a cost cap; open markers, the same tracker without the cap. Right: percentage of links kept when the tracker reads only every second to sixteenth frame. Arm identities have no annotation, so these measures show consistency and not accuracy. The plotting code was written with coding agents (see Methods).}
+\label{fig:identity}
+\end{figure}

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepstarnoodles-inference"
-version = "0.5.0.dev12"
+version = "0.5.0.dev14"
 description = "Portable GPU inference for StarSeg, Hydra dense pose, and GRU arm tracing"
 readme = "README.md"
 requires-python = ">=3.11"

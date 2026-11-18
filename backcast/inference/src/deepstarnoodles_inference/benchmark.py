@@ -20,7 +20,7 @@ import sys
 import time
 from collections import defaultdict
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from itertools import islice
 from pathlib import Path
 
@@ -210,6 +210,21 @@ def sha256(path):
     return h.hexdigest()
 
 
+class ModelPaths(dict):
+    """Verified checkpoint paths, with the trace parameters the manifest sets over the tracer checkpoint's own."""
+
+    trace_overrides = {}
+
+
+def load_tracer(paths, device):
+    """Load the tracer and apply the manifest's trace parameters, if it sets any."""
+    tracer, params, metadata, state = load_noodle_tracer_checkpoint(str(paths["tracer"]), device=device)
+    overrides = getattr(paths, "trace_overrides", None)
+    if overrides:
+        params = replace(params, **overrides)
+    return tracer, params, metadata, state
+
+
 def verify_models(path):
     path = Path(path).expanduser().resolve()
     if path.is_dir():
@@ -219,7 +234,7 @@ def verify_models(path):
         raise ValueError("unsupported model manifest schema")
     if manifest.get("path_base", "manifest_directory") != "manifest_directory":
         raise ValueError("portable manifests require path_base=manifest_directory")
-    paths = {}
+    paths = ModelPaths()
     for key in ("starseg", "hydra", "tracer"):
         record = manifest["models"][key]
         paths[key] = resolve(record["path"], path.parent)
@@ -243,6 +258,11 @@ def verify_models(path):
         raise ValueError("tracer normalization must come from its checkpoint buffers")
     if tracer.get("parent_checkpoint_sha256", manifest["models"]["hydra"]["sha256"]) != manifest["models"]["hydra"]["sha256"]:
         raise ValueError("tracer parent does not match the Hydra checkpoint")
+    threshold = tracer.get("invalid_seed_threshold")
+    if threshold is not None:
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0.0 < threshold <= 1.0:
+            raise ValueError("tracer invalid_seed_threshold must be a probability above 0")
+        paths.trace_overrides = {"invalid_seed_threshold": float(threshold)}
     return manifest, paths
 
 
@@ -330,7 +350,7 @@ class Cascade:
         if getattr(args, "hydra_execution", "eager") == "graph":
             from .hydra_graph import HydraGraph
             self.hydra_graph = HydraGraph(self.hydra)
-        self.tracer, self.trace_params, self.tracer_metadata, _ = load_noodle_tracer_checkpoint(str(paths["tracer"]), device=args.device)
+        self.tracer, self.trace_params, self.tracer_metadata, _ = load_tracer(paths, args.device)
         if self.tracer.hidden_size != 128:
             raise ValueError("expected the pinned GRU128 checkpoint")
         for name in ("dense_mean", "dense_std"):

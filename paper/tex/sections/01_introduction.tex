@@ -1,0 +1,29 @@
+\section*{Introduction}
+
+Tools that estimate animal posture from video~\cite{anderson2014toward,pereira2020quantifying} usually locate a fixed list of body points in each frame~\cite{mathis2018deeplabcut,pereira2022sleap,lauer2022multianimal}.
+A fixed list does not describe the sunflower sea star, \textit{Pycnopodia helianthoides}.
+The animals in our images have between 3 and 28 arms, the arms look alike, and an arm bends along its whole length.
+The natural description of such a body is a curve per arm, as in the centreline methods developed for nematodes~\cite{stephens2008dimensionality,javer2018opensource,hebert2021wormpose}.
+Arm kinematics of octopuses and brittle stars have been measured from video with manual digitizing or methods built for one preparation~\cite{yekutieli2007analyzing,kennedy2020octopus,goharimanesh2023methodological}.
+We found no published tool that traces the arms of a sea star (search of 11 November 2026).
+
+Sea star wasting disease removed most sunflower sea stars from their range after 2013~\cite{montecinolatorre2016devastating,harvell2019disease,hamilton2021disease}.
+The species is assessed as Critically Endangered~\cite{gravem2021pycnopodia}.
+Laboratories now rear it through its life cycle~\cite{hodin2021progress}.
+Behavioural assays of sea stars, such as the righting response used as a stress indicator~\cite{polls1975behavioral,lawrence1996righting}, are timed by an observer.
+
+Here we describe DeepStarNoodles, a pipeline that returns one base-to-tip polyline for every arm of every sunflower sea star in a frame and links arms from frame to frame (Fig~\ref{fig:workflow}).
+A detector finds each animal.
+A second network predicts dense maps of arm geometry on the crop of that animal.
+A small recurrent network then walks along each arm from its tip to its base, in the manner of step-by-step tracers of roads, vessels and neurons~\cite{bastani2018roadtracer,wolterink2019coronary,januszewski2018highprecision}.
+We report its accuracy on held-out images, the gain of the tracer over a shortest-path decoder of the same maps, and its throughput.
+We then use it on two sets of laboratory recordings: righting after inversion, and the change from a quiescent to an alert state.
+
+\begin{figure}[!ht]
+\FIG{Fig1}{\linewidth}
+\caption{{\bf The three stages of the pipeline.}
+(A) The detector (StarSeg), a YOLO26-L instance-segmentation model, outlines each sunflower sea star in a video frame (mask, cyan; box, yellow). A square crop with twice the side of the box (dashed) is resized to 512 $\times$ 512~px.
+(B) The field network, a DINOv3 ConvNeXt-Base backbone with a feature pyramid, predicts 18 maps on the crop, shown as seven layers: arm support, centreline, arm direction, progress from base to tip, three body landmarks, arm bases and tips, and an eight-channel embedding that differs between arms (first three principal components).
+(C) The tracer walks each arm from its tip to its base (dots; one arm in cyan). At every step a gated recurrent unit (GRU) reads a 33 $\times$ 33~px patch of the maps around its position (yellow squares), updates its hidden state $h$, and predicts the next step (arrows, drawn at twice their length) and whether to continue or stop at the base. Thumbnails show the support map. B and C are enlarged around the animal. The frame is from a laboratory recording at 1 frame per second. The plotting code was written with coding agents (see Methods).}
+\label{fig:workflow}
+\end{figure}
