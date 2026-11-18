@@ -31,28 +31,37 @@ to navigate the code, or jump to [training and evaluation](#training-and-evaluat
 
 ```mermaid
 flowchart TD
-    Video[Video frames] --> Crop[StarSeg detection and square RGB crops]
-    Crop --> Hydra[Hydra: dense pose and arm embeddings]
-    Crop --> Tracer[Noodle Tracer: arm polylines]
-    Hydra --> Tracer
-    Tracer --> Tracker[FusedTracker: causal arm association]
-    Tracker --> Output[Tracking JSON and optional overlay video]
-    Tracer --> Bag[Arm-shape representations]
-    Tracker --> Motion[Arm-motion representations]
-    Hydra --> VAE[Progress temporal VAE]
+    Input["Image or video frame"] --> Detect["Detect · StarSeg<br/>YOLO26-L segmentation<br/>multi-star: BoT-SORT IDs"]
+    Detect --> Crop["Square crop per star<br/>2 × box side, 512 × 512"]
+    Crop --> Map["Map · Hydra<br/>18 dense maps"]
+    Map -- raw maps --> Trace["Trace · Noodle Tracer<br/>a GRU walks each arm<br/>from tip to base"]
+    Crop -- RGB --> Trace
+    Trace -- "arms + tip identity" --> Track["Track · FusedTracker<br/>arm IDs across frames"]
+    Map -- body centre --> Track
+    Track --> Output["Tracking JSON<br/>optional overlay MP4"]
+    Trace --> Bag["arm_bag<br/>arm-shape summary"]
+    Output --> Motion["arm_motion<br/>tracked-arm motion"]
+    Output --> Polylines["noodle_polylines<br/>paper-figure quantities"]
+    Map -.-> VAE["Progress temporal VAE<br/>earlier model, not validated<br/>with hydra.pt"]
+    classDef analysis fill:#f6f8fa,stroke:#8c959f,stroke-dasharray:4 3,color:#24292f
+    class Bag,Motion,Polylines,VAE analysis
 ```
 
-- **StarSeg** detects sunflower stars and creates a square crop around each
-  detection.
+- **StarSeg** is a YOLO26-L segmentation model that finds each sunflower star
+  (the binary detector by default). Each detection gets a square crop, twice
+  the longer side of its box, resized to 512 × 512. In multi-star video,
+  BoT-SORT gives each star an ID.
 - **Hydra** combines a DINOv3 ConvNeXt-Base backbone with an FPN and prediction
   heads to produce an 18-channel dense field: ten geometry, landmark, and
   endpoint channels plus an eight-channel arm embedding.
-- **Noodle Tracer** uses the image crop and dense field to generate one
-  base-to-tip polyline for each detected arm.
+- **Noodle Tracer** starts a walker at every tip peak. At each step a GRU reads
+  a 33 × 33 window of the raw fields and image features, and predicts the next
+  step and whether to stop at the base. Tips it rates as not a tip (p ≥ 0.6 by
+  default) are dropped. The output is one base-to-tip polyline per arm.
 - The **fused tracker** assigns video-local association IDs to arm
-  observations using body-relative shape and identity embeddings. Multi-star
-  mode first assigns animal IDs with BoT-SORT and keeps an independent arm
-  tracker for each animal.
+  observations using body-relative shape and identity embeddings. The body
+  centre is Hydra's mouth peak, or the centroid of the arm support if there is
+  none. Multi-star mode keeps an independent arm tracker for each star.
 
 The released Hydra operates on 512×512 RGB crops. Its channel contract is
 defined in [`model.py`](CORE/deepstarnoodles/model.py):
