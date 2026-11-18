@@ -285,12 +285,14 @@ their selection and test records are in [`config/locked/`](config/locked/) and
 | Path | Contents |
 | --- | --- |
 | [`CORE/deepstarnoodles/`](CORE/deepstarnoodles/) | Importable Python package; models, data, decoding, tracking, and representations |
+| [`CORE/noodle_polylines/`](CORE/noodle_polylines/) | Torch-free polyline representations of the paper figures |
 | [`SCRIPTS/`](SCRIPTS/) | Training, evaluation, validation, and inference commands |
 | [`config/`](config/) | Artifact hashes, tracer normalization, evaluation records, and tracking settings |
 | [`docs/`](docs/) | Representation API and earlier recipe documentation |
 | [`huggingface/`](huggingface/) | Model and dataset cards of the Hugging Face repositories |
 | [`backcast/`](backcast/README.md) | Annotating a long archive of 1 fps video on rented GPUs, then tracking and representations |
 | [`tests/`](tests/) | Unit, integration, and optional local-artifact checks |
+| [`examples/`](examples/), [`benchmarks/`](benchmarks/) | Micro example data and scripts; benchmark and parity tools |
 | [`external/dinov3/`](external/dinov3/) | Vendored DINOv3 source under Meta's license |
 | `DATA/` | Downloaded datasets; excluded from git |
 | `MODELS/` | Downloaded and trained checkpoints; excluded from git |
@@ -665,6 +667,22 @@ the outputs of an earlier Hydra with the same channel contract and has not been
 validated with `hydra.pt`. Its checkpoint,
 `MODELS/temporal_vae/dnt_progress_temporal_vae_60s_sleepy.pt`, is in Hugging
 Face revision `0881c427eb0f1f564ef76fbd8399173121169132`.
+
+## Polyline representations of the paper figures
+
+`noodle_polylines` (in `CORE/noodle_polylines`) computes every arm-polyline quantity the
+paper figures use. It covers:
+
+- per-arm geometry: resampling, arc length, curvature, tip angle;
+- per-frame aggregates: fold asymmetry, arm-length spread, curvature, tip isotropy;
+- tracked kinematics: arm deformation and tip motion;
+- the optional FusedTracker association and its diagnostics.
+
+It works on a pickle-free CSR container and needs only numpy and scipy (no torch).
+Named presets reproduce each panel's exact definitions. A 90-s example with a runnable
+script is in [`examples/noodle_polylines`](examples/noodle_polylines). See
+[`docs/noodle-polylines.md`](docs/noodle-polylines.md) for the catalogue, the data model
+and the parity and benchmark tools.
 
 ## Tests
 
