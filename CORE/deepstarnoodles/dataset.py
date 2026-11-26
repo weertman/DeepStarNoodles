@@ -77,6 +77,14 @@ def _draw_gaussian(out: np.ndarray, x: float, y: float, sigma: float) -> None:
     out[y0:y1, x0:x1] = np.maximum(out[y0:y1, x0:x1], patch)
 
 
+def _endpoint_centre(point: np.ndarray, snap: bool) -> tuple[float, float]:
+    """Gaussian centre for an arm base/tip: the float point, or its nearest pixel."""
+    x, y = float(point[0]), float(point[1])
+    if snap:
+        return float(math.floor(x + 0.5)), float(math.floor(y + 0.5))
+    return x, y
+
+
 def _chaikin_smooth(points: np.ndarray, iterations: int = 2) -> np.ndarray:
     pts = np.asarray(points, dtype=np.float32)
     if len(pts) < 3 or iterations <= 0:
@@ -365,8 +373,14 @@ def rasterize_targets(
     arm_tip_sigma: float = 2.0,
     point_sigma: float = 4.0,
     return_arm_instance: bool = False,
+    snap_endpoint_peaks: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Rasterize CVAT shapes into the fixed 10-channel dense target tensor.
+
+    By default the arm base/tip Gaussians are centred on the float keypoint, so
+    no pixel reaches exactly 1.0. ``snap_endpoint_peaks`` centres them on the
+    pixel nearest each keypoint instead (CenterNet), giving one pixel of value
+    exactly 1.0 per base/tip; the modified focal loss takes those as positives.
 
     When ``return_arm_instance`` is True, also return a per-pixel arm-instance
     label map (int16, shape (H, W)) for the identity-embedding loss:
@@ -403,9 +417,11 @@ def rasterize_targets(
                 seg_len = max(float(seg_lengths[i]), 1e-6)
                 tangent = (b - a) / seg_len
                 if i == 0:
-                    _draw_gaussian(target[8], float(a[0]), float(a[1]), float(arm_base_sigma))
+                    bx, by = _endpoint_centre(a, snap_endpoint_peaks)
+                    _draw_gaussian(target[8], bx, by, float(arm_base_sigma))
                 if i == len(seg_lengths) - 1:
-                    _draw_gaussian(target[9], float(b[0]), float(b[1]), float(arm_tip_sigma))
+                    tx, ty = _endpoint_centre(b, snap_endpoint_peaks)
+                    _draw_gaussian(target[9], tx, ty, float(arm_tip_sigma))
                 cap = _capsule_local(a, b, support_arm_width, width, height)
                 if cap is not None:
                     m, x0, y0 = cap
@@ -502,6 +518,9 @@ class HydraDatasetConfig:
     base_trim_max_fraction: float = 0.5
     base_trim_min_remaining_length: float = 8.0
     include_centerline: bool = True
+    # Centre base/tip Gaussians on the nearest pixel (peak exactly 1.0); needed
+    # by the modified focal endpoint loss. Off keeps the published targets.
+    snap_endpoint_peaks: bool = False
 
 
 def moderate_augment_kwargs() -> dict[str, float | bool]:
@@ -571,6 +590,7 @@ class HydraDenseDataset(Dataset):
         base_trim_max_fraction: float = 0.5,
         base_trim_min_remaining_length: float = 8.0,
         include_centerline: bool = True,
+        snap_endpoint_peaks: bool = False,
     ) -> None:
         self.index_csv = Path(index_csv)
         self.config = HydraDatasetConfig(
@@ -605,6 +625,7 @@ class HydraDenseDataset(Dataset):
             base_trim_max_fraction=base_trim_max_fraction,
             base_trim_min_remaining_length=base_trim_min_remaining_length,
             include_centerline=include_centerline,
+            snap_endpoint_peaks=snap_endpoint_peaks,
         )
         with self.index_csv.open(newline='', encoding='utf-8') as f:
             self.rows = list(csv.DictReader(f))
@@ -762,6 +783,9 @@ class HydraDenseDataset(Dataset):
             'base_trim_min_remaining_length': self.config.base_trim_min_remaining_length,
             'include_centerline': self.config.include_centerline,
         }
+        if self.config.snap_endpoint_peaks:
+            # Keyed only when on, so existing cache entries stay valid.
+            payload['snap_endpoint_peaks'] = True
         digest = hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode('utf-8')).hexdigest()
         return cache_dir / f'{digest}.pt'
 
@@ -779,6 +803,7 @@ class HydraDenseDataset(Dataset):
             arm_tip_sigma=self.config.arm_tip_sigma,
             point_sigma=self.config.point_sigma,
             return_arm_instance=True,
+            snap_endpoint_peaks=self.config.snap_endpoint_peaks,
         )
         if cache_path is not None:
             cache_path.parent.mkdir(parents=True, exist_ok=True)

@@ -2,9 +2,13 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
+import torch.nn.functional as F
 
+from deepstarnoodles.dataset import rasterize_targets
 from deepstarnoodles.train import (
     freeze_all_but_endpoint_head,
     hydra_loss,
@@ -82,6 +86,47 @@ def test_modified_focal_ignore_mask_removes_ignored_false_positive() -> None:
 
     assert ignored == pytest.approx(float(baseline))
     assert modified_focal_heatmap_loss(false_positive, target) > ignored
+
+
+def _float_endpoint_arms() -> list[dict]:
+    # Sub-pixel bases and tips, as in the real annotations.
+    return [
+        {'label': 'arm', 'type': 'polyline', 'points': [30.3, 31.6, 50.7, 12.2]},
+        {'label': 'arm', 'type': 'polyline', 'points': [33.4, 34.5, 54.6, 52.4]},
+        {'label': 'arm', 'type': 'polyline', 'points': [28.8, 33.1, 9.5, 47.7]},
+    ]
+
+
+def test_float_keypoint_targets_have_no_exact_peaks_by_default() -> None:
+    target = rasterize_targets((64, 64), _float_endpoint_arms(), arm_tip_sigma=4.0)
+
+    assert int(target[8:10].eq(1.0).sum()) == 0
+
+
+def test_snapped_endpoint_targets_have_one_positive_per_keypoint() -> None:
+    arms = _float_endpoint_arms()
+    target = rasterize_targets((64, 64), arms, arm_tip_sigma=4.0, snap_endpoint_peaks=True)
+
+    for channel, point_slice in ((8, slice(0, 2)), (9, slice(2, 4))):
+        positives = target[channel].eq(1.0)
+        assert int(positives.sum()) == len(arms)
+        for arm in arms:
+            x, y = arm['points'][point_slice]
+            assert bool(positives[math.floor(y + 0.5), math.floor(x + 0.5)])
+
+
+def test_modified_focal_on_snapped_targets_has_positive_term() -> None:
+    target = rasterize_targets(
+        (64, 64), _float_endpoint_arms(), arm_tip_sigma=4.0, snap_endpoint_peaks=True
+    )[8:10].unsqueeze(0)
+    # Full-confidence negatives contribute ~0, so the loss is the positive term.
+    logits = torch.where(target.eq(1.0), torch.tensor(-4.0), torch.tensor(-30.0))
+
+    loss = modified_focal_heatmap_loss(logits, target)
+    positive_only = -F.logsigmoid(torch.tensor(-4.0)) * (1.0 - torch.sigmoid(torch.tensor(-4.0))) ** 2
+
+    assert float(loss) > 1.0
+    assert float(loss) == pytest.approx(float(positive_only), rel=1e-4)
 
 
 def test_hydra_loss_default_endpoint_objective_remains_weighted_mse() -> None:

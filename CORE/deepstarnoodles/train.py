@@ -384,7 +384,12 @@ def modified_focal_heatmap_loss(
     keep: torch.Tensor | None = None,
     channel_multipliers: Sequence[float] | None = None,
 ) -> torch.Tensor:
-    """Numerically stable CornerNet-style focal loss for Gaussian heatmaps."""
+    """Numerically stable CornerNet-style focal loss for Gaussian heatmaps.
+
+    Positives are target pixels exactly equal to 1.0, so the targets must be
+    rasterized with ``snap_endpoint_peaks=True`` (Gaussians centred on the pixel
+    nearest each keypoint); sub-pixel-centred targets have no positives.
+    """
     positive = true.eq(1.0).to(logits.dtype)
     negative = true.lt(1.0).to(logits.dtype)
     if keep is not None:
@@ -1223,6 +1228,7 @@ def main() -> int:
         max_bridge_pairs=args.max_bridge_pairs,
         bridge_offset=args.bridge_offset,
         include_centerline=not args.no_centerline,
+        snap_endpoint_peaks=args.endpoint_heatmap_loss == 'modified_focal',
     )
     train_target_kwargs = {
         'trim_overlapping_arm_bases': args.trim_overlapping_arm_bases,
